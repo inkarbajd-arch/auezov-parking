@@ -26,6 +26,12 @@ except Exception as e:
 app = Flask(__name__)
 app.secret_key = "auezov-parking-secret-key"
 
+try:
+    init_db()
+    print("✅ Render database initialized")
+except Exception as e:
+    print("❌ Database init error:", e)
+
 UPLOAD_DIR = "static/captures"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
@@ -357,13 +363,18 @@ def process_plate(frame, camera_name):
         free, free_type = has_free_access(plate)
 
         if camera_name == "entry":
-            if not barriers["cam1"]["fixed_close"]:
-                add_entry(plate, "Гл корпус кіріс", image_path)
 
-                if free:
-                    mark_last_log_free(plate, free_type)
+        if camera_name == "entry":
 
-                print(f"✅ Кірді: {plate}")
+        if not barriers["cam1"]["fixed_close"]:
+
+        add_entry(plate, "Гл корпус кіріс", image_path)
+
+        print("✅ ENTRY SAVED:", plate)
+
+        if free:
+            mark_last_log_free(plate, free_type)
+            print(f"✅ Кірді: {plate}")
         else:
             if not barriers["cam2"]["fixed_close"]:
                 ok = add_exit(plate, "Гл корпус шығыс", image_path)
