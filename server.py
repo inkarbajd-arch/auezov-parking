@@ -315,7 +315,6 @@ def process_plate(frame, camera_name):
 
     try:
         results = alpr.predict(frame)
-
         plate = ""
 
         for item in results:
@@ -363,18 +362,14 @@ def process_plate(frame, camera_name):
         free, free_type = has_free_access(plate)
 
         if camera_name == "entry":
+            if not barriers["cam1"]["fixed_close"]:
+                add_entry(plate, "Гл корпус кіріс", image_path)
 
-        if camera_name == "entry":
+                if free:
+                    mark_last_log_free(plate, free_type)
 
-        if not barriers["cam1"]["fixed_close"]:
+                print(f"✅ ENTRY SAVED: {plate}")
 
-        add_entry(plate, "Гл корпус кіріс", image_path)
-
-        print("✅ ENTRY SAVED:", plate)
-
-        if free:
-            mark_last_log_free(plate, free_type)
-            print(f"✅ Кірді: {plate}")
         else:
             if not barriers["cam2"]["fixed_close"]:
                 ok = add_exit(plate, "Гл корпус шығыс", image_path)
@@ -382,7 +377,7 @@ def process_plate(frame, camera_name):
                 if ok and free:
                     mark_last_log_free(plate, free_type)
 
-                print(f"✅ Шықты: {plate}" if ok else f"⚠️ Табылмады: {plate}")
+                print(f"✅ EXIT SAVED: {plate}" if ok else f"⚠️ Табылмады: {plate}")
 
         plate_confirm[camera_name]["last"] = ""
         plate_confirm[camera_name]["count"] = 0
