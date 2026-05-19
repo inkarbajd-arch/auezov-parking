@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="kk">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Журнал | Auezov Parking</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-logo image-logo">
+            <img src="/static/img/logo.png" alt="Auezov Logo" />
+          </div>
+          <div>
+            <h2>Auezov Parking</h2>
+            <span>Operator Panel</span>
+          </div>
+        </div>
+
+  <nav class="nav">
+  <a class="nav-link" href="/dashboard">АРМ</a>
+  <a class="nav-link" href="/journal">Журнал</a>
+  <a class="nav-link" href="/events">События</a>
+  <a class="nav-link" href="/audit">Аудит</a>
+  <a class="nav-link" href="/abonement">Абонемент</a>
+  <a class="nav-link" href="/administration">Администрация</a>
+  <a class="nav-link" href="/payments">Платежи / Баланс</a>
+  <a class="nav-link" href="/pay">QR Төлем</a>
+  <a class="nav-link" href="/client">Клиент статус</a>
+  <a class="nav-link logout" href="/logout">Шығу</a>
+</nav>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div>
+            <h1>Журнал заезд / выезд</h1>
+            <p>Номерді басқанда басқару мәзірі ашылады</p>
+          </div>
+        </header>
+
+        <div class="table-card">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Номер</th>
+                <th>Кірген уақыты</th>
+                <th>Шыққан уақыты</th>
+                <th>Пост</th>
+                <th>Минут</th>
+                <th>Сома</th>
+                <th>Төлем</th>
+                <th>Статус</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for log in logs %}
+              <tr>
+                <td>{{ log.id }}</td>
+                <td>
+                  <button
+                    class="plate-chip clickable"
+                    onclick="openJournalModal('{{ log.id }}','{{ log.plate }}','{{ log.entry_time }}','{{ log.exit_time or '' }}')"
+                  >
+                    {{ log.plate }}
+                  </button>
+                </td>
+                <td>{{ log.entry_time }}</td>
+                <td>{{ log.exit_time or '-' }}</td>
+                <td>{{ log.entry_post }} / {{ log.exit_post or '-' }}</td>
+                <td>{{ log.duration_minutes }}</td>
+                <td>{{ log.amount }} ₸</td>
+                <td>
+                  {% if log.paid %}
+                  <span class="mini success-text">Төленді</span>
+                  {% else %}
+                  <span class="mini danger-text">Төленбеді</span>
+                  {% endif %}
+                </td>
+                <td>{{ log.status }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </main>
+    </div>
+
+    <div class="modal" id="journalModal">
+      <div class="modal-card wide-modal">
+        <h2 id="journalModalTitle">Журнал әрекеттері</h2>
+
+        <input type="hidden" id="modalLogId" />
+        <input type="hidden" id="modalOldPlate" />
+
+        <div class="journal-actions">
+          <button class="btn primary" onclick="showAction('editPlateBox')">
+            1. Изменить номер
+          </button>
+          <button class="btn success" onclick="showAction('editTimeBox')">
+            2. Изменить время
+          </button>
+          <button class="btn warning" onclick="deleteDebt()">
+            3. Удалить задолженность
+          </button>
+          <button class="btn danger" onclick="deleteLog()">
+            4. Журналдан өшіру
+          </button>
+        </div>
+
+        <div class="action-box" id="editPlateBox">
+          <h3>Номерді өзгерту</h3>
+          <input id="newPlate" placeholder="Жаңа номер: 919DAU13" />
+          <button class="btn primary" onclick="editPlate()">Сақтау</button>
+        </div>
+
+        <div class="action-box" id="editTimeBox">
+          <h3>Кіру / шығу уақытын өзгерту</h3>
+          <label>Кірген уақыты</label>
+          <input id="entryTime" placeholder="2026-05-01 08:30:00" />
+          <label>Шыққан уақыты</label>
+          <input id="exitTime" placeholder="2026-05-01 10:30:00" />
+          <button class="btn success" onclick="editTime()">
+            Уақытты сақтау
+          </button>
+        </div>
+
+        <div class="modal-actions">
+          <button class="btn ghost" onclick="closeJournalModal()">Жабу</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+        function normalizePlate(value) {
+          return String(value || "")
+            .toUpperCase()
+            .replace(/\s+/g, "")
+            .replace(/-/g, "")
+            .replace(/_/g, "");
+        }
+
+        function openJournalModal(id, plate, entryTime, exitTime) {
+          document.getElementById("modalLogId").value = id;
+          document.getElementById("modalOldPlate").value = plate;
+          document.getElementById("journalModalTitle").textContent =
+            plate + " — әрекеттер";
+          document.getElementById("newPlate").value = plate;
+          document.getElementById("entryTime").value = entryTime;
+          document.getElementById("exitTime").value = exitTime;
+          document.getElementById("journalModal").style.display = "grid";
+          hideBoxes();
+        }
+
+        function closeJournalModal() {
+          document.getElementById("journalModal").style.display = "none";
+        }
+
+        function hideBoxes() {
+          document
+            .querySelectorAll(".action-box")
+            .forEach((box) => (box.style.display = "none"));
+        }
+
+        function showAction(id) {
+          hideBoxes();
+          document.getElementById(id).style.display = "block";
+        }
+
+        function postForm(url, data) {
+          const fd = new FormData();
+          Object.keys(data).forEach((key) => fd.append(key, data[key]));
+          return fetch(url, { method: "POST", body: fd }).then((r) => r.json());
+        }
+
+        function editPlate() {
+          const oldPlate = document.getElementById("modalOldPlate").value;
+          const newPlate = normalizePlate(
+            document.getElementById("newPlate").value,
+          );
+
+          postForm("/api/journal/edit-plate", {
+            old_plate: oldPlate,
+            new_plate: newPlate,
+          }).then((data) => {
+            alert(data.ok ? "Номер өзгертілді" : data.message);
+            if (data.ok) location.reload();
+          });
+        }
+
+        function editTime() {
+          postForm("/api/journal/edit-time", {
+            log_id: document.getElementById("modalLogId").value,
+            entry_time: document.getElementById("entryTime").value,
+            exit_time: document.getElementById("exitTime").value,
+          }).then((data) => {
+            alert(data.ok ? "Уақыт өзгертілді" : data.message);
+            if (data.ok) location.reload();
+          });
+        }
+
+        function deleteDebt() {
+          if (!confirm("Қарызды өшіреміз бе?")) return;
+
+          postForm("/api/journal/delete-debt", {
+            log_id: document.getElementById("modalLogId").value,
+          }).then((data) => {
+            alert(data.ok ? "Қарыз өшірілді" : data.message);
+            if (data.ok) location.reload();
+          });
+        }
+
+        function deleteLog() {
+          if (
+            !confirm("Бұл номер журналдан өшеді. Аудитте сақталады. Өшіреміз бе?")
+          )
+            return;
+
+          postForm("/api/journal/delete-log", {
+            log_id: document.getElementById("modalLogId").value,
+          }).then((data) => {
+            alert(data.ok ? "Журналдан өшірілді" : data.message);
+            if (data.ok) location.reload();
+          });
+        }
+      
+    </script>
+    <script src="/static/app.js">
+  </body>
+</html>

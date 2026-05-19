@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="kk">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>АРМ | Auezov Parking</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-logo image-logo">
+            <img src="/static/img/logo.png" alt="Auezov Logo" />
+          </div>
+          <div>
+            <h2>Auezov Parking</h2>
+            <span>Operator Panel</span>
+          </div>
+        </div>
+
+        <nav class="nav">
+  <a class="nav-link" href="/dashboard">АРМ</a>
+  <a class="nav-link" href="/journal">Журнал</a>
+  <a class="nav-link" href="/events">События</a>
+  <a class="nav-link" href="/audit">Аудит</a>
+  <a class="nav-link" href="/abonement">Абонемент</a>
+  <a class="nav-link" href="/administration">Администрация</a>
+  <a class="nav-link" href="/payments">Платежи / Баланс</a>
+  <a class="nav-link" href="/pay">QR Төлем</a>
+  <a class="nav-link" href="/client">Клиент статус</a>
+  <a class="nav-link logout" href="/logout">Шығу</a>
+</nav>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div>
+            <h1>АРМ — Гл корпус</h1>
+            <p>Кіріс және шығыс камералары</p>
+          </div>
+          <div class="status-pill online">System Online</div>
+        </header>
+
+        <section class="camera-grid">
+          <div class="camera-card">
+            <div class="card-head">
+              <div>
+                <h3>Кіріс камера</h3>
+                <span>Ноутбук камерасы</span>
+              </div>
+              <span class="camera-badge entry">ENTRY</span>
+            </div>
+
+            <img src="/video/entry" class="camera-view" alt="entry camera" />
+
+            <div class="plate-panel">
+              <span>Оқылған номер</span>
+              <strong id="entryPlate">---</strong>
+            </div>
+
+            <div class="action-grid">
+              <button onclick="openReason('entry')" class="btn primary">
+                Открыть
+              </button>
+              <button onclick="barrier('entry', 'close')" class="btn danger">
+                Закрыть
+              </button>
+              <button
+                onclick="barrier('entry', 'fix_open')"
+                class="btn success"
+              >
+                Фикс. открытым
+              </button>
+              <button
+                onclick="barrier('entry', 'fix_close')"
+                class="btn warning"
+              >
+                Фикс. закрытым
+              </button>
+              <button onclick="barrier('entry', 'unfix')" class="btn ghost">
+                Убрать фиксацию
+              </button>
+            </div>
+
+            <div class="manual-box">
+              <input id="manualEntry" placeholder="Мысалы: 919DAU13" />
+              <button onclick="manual('entry')" class="btn primary">
+                Запустить без шлагбаума
+              </button>
+            </div>
+          </div>
+
+          <div class="camera-card">
+            <div class="card-head">
+              <div>
+                <h3>Шығыс камера</h3>
+                <span>DroidCam / телефон камерасы</span>
+              </div>
+              <span class="camera-badge exit">EXIT</span>
+            </div>
+
+            <img src="/video/exit" class="camera-view" alt="exit camera" />
+
+            <div class="plate-panel">
+              <span>Оқылған номер</span>
+              <strong id="exitPlate">---</strong>
+            </div>
+
+            <div class="action-grid">
+              <button onclick="openReason('exit')" class="btn primary">
+                Открыть
+              </button>
+              <button onclick="barrier('exit', 'close')" class="btn danger">
+                Закрыть
+              </button>
+              <button onclick="barrier('exit', 'fix_open')" class="btn success">
+                Фикс. открытым
+              </button>
+              <button
+                onclick="barrier('exit', 'fix_close')"
+                class="btn warning"
+              >
+                Фикс. закрытым
+              </button>
+              <button onclick="barrier('exit', 'unfix')" class="btn ghost">
+                Убрать фиксацию
+              </button>
+            </div>
+
+            <div class="manual-box">
+              <input id="manualExit" placeholder="Мысалы: 919DAU13" />
+              <button onclick="manual('exit')" class="btn primary">
+                Выпустить без шлагбаума
+              </button>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="modal" id="reasonModal">
+      <div class="modal-card">
+        <h2>Шлагбаумды ашу себебі</h2>
+
+        <select id="reasonSelect">
+          <option>Инвалид</option>
+          <option>Ардагер</option>
+          <option>Көп балалы ата-ана</option>
+          <option>Полиция / 102</option>
+          <option>Өрт сөндіру / 101</option>
+          <option>Другое</option>
+        </select>
+
+        <textarea
+          id="reasonText"
+          placeholder="Қосымша себеп жазыңыз"
+        ></textarea>
+
+        <div class="modal-actions">
+          <button onclick="confirmOpen()" class="btn primary">Ашу</button>
+          <button onclick="closeModal()" class="btn ghost">Болдырмау</button>
+        </div>
+      </div>
+    </div>
+    </script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

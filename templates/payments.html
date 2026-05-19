@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="kk">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Платежи | Auezov Parking</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-logo image-logo">
+            <img src="/static/img/logo.png" alt="Logo" />
+          </div>
+          <div>
+            <h2>Auezov Parking</h2>
+            <span>Operator Panel</span>
+          </div>
+        </div>
+
+        <nav class="nav">
+          <a class="nav-link" href="/dashboard">АРМ</a>
+          <a class="nav-link" href="/journal">Журнал</a>
+          <a class="nav-link" href="/events">События</a>
+          <a class="nav-link" href="/audit">Аудит</a>
+          <a class="nav-link" href="/abonement">Абонемент</a>
+          <a class="nav-link" href="/administration">Администрация</a>
+          <a class="nav-link" href="/payments">Платежи / Баланс</a>
+          <a class="nav-link" href="/pay">QR Төлем</a>
+          <a class="nav-link" href="/client">Клиент статус</a>
+          <a class="nav-link logout" href="/logout">Шығу</a>
+        </nav>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div>
+            <h1>Платежи / Баланс</h1>
+            <p>Төлемдер, blacklist / whitelist және клиент балансын басқару</p>
+          </div>
+          <div class="status-pill online">ONLINE</div>
+        </header>
+
+        <div class="forms-grid">
+          <div class="panel">
+            <h3>Төлем енгізу</h3>
+
+            <input id="payPlate" type="text" placeholder="Номер" />
+            <input id="payAmount" type="number" placeholder="Сумма" />
+
+            <select id="payMethod">
+              <option value="Kaspi">Kaspi</option>
+              <option value="Halyk">Halyk</option>
+              <option value="Терминал">Терминал</option>
+              <option value="Наличные">Наличные</option>
+            </select>
+
+            <button class="btn primary" type="button" onclick="addPayment()">
+              Төлем сақтау
+            </button>
+          </div>
+
+          <div class="panel">
+            <h3>Черный / Белый список</h3>
+
+            <input id="listPlate" type="text" placeholder="Номер" />
+            <input
+              id="listReason"
+              type="text"
+              placeholder="Комментарий / Себеп"
+            />
+
+            <div class="split-actions">
+              <button
+                class="btn success"
+                type="button"
+                onclick="addList('white')"
+              >
+                Белый список
+              </button>
+              <button
+                class="btn danger"
+                type="button"
+                onclick="addList('black')"
+              >
+                Черный список
+              </button>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h3>Баланс өзгерту</h3>
+
+            <input id="balancePlate" type="text" placeholder="Номер" />
+            <input id="balanceAmount" type="number" placeholder="Сумма" />
+
+            <div class="split-actions">
+              <button
+                class="btn success"
+                type="button"
+                onclick="balance('plus')"
+              >
+                Баланс қосу
+              </button>
+              <button
+                class="btn warning"
+                type="button"
+                onclick="balance('minus')"
+              >
+                Баланс азайту
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div class="table-card">
+          <div class="card-head">
+            <div>
+              <h3>Соңғы төлемдер</h3>
+              <span>Барлық төлемдер тізімі</span>
+            </div>
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Номер</th>
+                <th>Сумма</th>
+                <th>Метод</th>
+                <th>Уақыты</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for payment in payments %}
+              <tr>
+                <td>{{ payment.id }}</td>
+                <td><span class="plate-chip">{{ payment.plate }}</span></td>
+                <td>{{ payment.amount }} ₸</td>
+                <td>{{ payment.method }}</td>
+                <td>{{ payment.created_at }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="table-card">
+          <div class="card-head">
+            <div>
+              <h3>White / Black List</h3>
+              <span>Клиент статустары</span>
+            </div>
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Номер</th>
+                <th>Тип</th>
+                <th>Себеп</th>
+                <th>Уақыты</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for item in lists %}
+              <tr>
+                <td>{{ item.id }}</td>
+                <td><span class="plate-chip">{{ item.plate }}</span></td>
+                <td>
+                  {% if item.type == 'white' %}
+                  <span class="mini success-text">WHITE</span>
+                  {% else %}
+                  <span class="mini danger-text">BLACK</span>
+                  {% endif %}
+                </td>
+                <td>{{ item.reason or '-' }}</td>
+                <td>{{ item.created_at }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="table-card">
+          <div class="card-head">
+            <div>
+              <h3>Клиент балансы</h3>
+              <span>Номерлер бойынша баланс</span>
+            </div>
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Номер</th>
+                <th>Баланс</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for item in balances %}
+              <tr>
+                <td>{{ item.id }}</td>
+                <td><span class="plate-chip">{{ item.plate }}</span></td>
+                <td>
+                  {% if item.balance >= 0 %}
+                  <span class="mini success-text">{{ item.balance }} ₸</span>
+                  {% else %}
+                  <span class="mini danger-text">{{ item.balance }} ₸</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </main>
+    </div>
+
+    <script>
+      function normalizePlate(value) {
+        return String(value || "")
+          .toUpperCase()
+          .replace(/\s+/g, "")
+          .replace(/-/g, "")
+          .replace(/_/g, "");
+      }
+
+      function postForm(url, data) {
+        const fd = new FormData();
+
+        Object.keys(data).forEach((key) => {
+          fd.append(key, data[key]);
+        });
+
+        return fetch(url, {
+          method: "POST",
+          body: fd,
+        }).then((response) => response.json());
+      }
+
+      function addPayment() {
+        const plate = normalizePlate(document.getElementById("payPlate").value);
+
+        const amount = document.getElementById("payAmount").value;
+
+        const method = document.getElementById("payMethod").value;
+
+        if (!plate || !amount) {
+          alert("Номер және сумма жазыңыз");
+          return;
+        }
+
+        postForm("/api/payment", {
+          plate: plate,
+          amount: amount,
+          method: method,
+        }).then((data) => {
+          alert(data.ok ? "Төлем сақталды" : "Қате шықты");
+
+          if (data.ok) {
+            location.reload();
+          }
+        });
+      }
+
+      function addList(type) {
+        const plate = normalizePlate(
+          document.getElementById("listPlate").value,
+        );
+
+        const reason = document.getElementById("listReason").value;
+
+        if (!plate) {
+          alert("Номер жазыңыз");
+          return;
+        }
+
+        postForm("/api/list", {
+          plate: plate,
+          type: type,
+          reason: reason,
+        }).then((data) => {
+          alert(data.ok ? "Списокқа қосылды" : "Қате шықты");
+
+          if (data.ok) {
+            location.reload();
+          }
+        });
+      }
+
+      function balance(operation) {
+        const plate = normalizePlate(
+          document.getElementById("balancePlate").value,
+        );
+
+        const amount = document.getElementById("balanceAmount").value;
+
+        if (!plate || !amount) {
+          alert("Номер және сумма жазыңыз");
+          return;
+        }
+
+        postForm("/api/balance", {
+          plate: plate,
+          amount: amount,
+          operation: operation,
+        }).then((data) => {
+          alert(data.ok ? "Баланс өзгертілді" : "Қате шықты");
+
+          if (data.ok) {
+            location.reload();
+          }
+        });
+      }
+    </script>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

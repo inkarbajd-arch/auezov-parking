@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="kk">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>События | Auezov Parking</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-logo image-logo">
+            <img src="/static/img/logo.png" alt="Auezov Logo" />
+          </div>
+          <div>
+            <h2>Auezov Parking</h2>
+            <span>Operator Panel</span>
+          </div>
+        </div>
+
+        <nav class="nav">
+  <a class="nav-link" href="/dashboard">АРМ</a>
+  <a class="nav-link" href="/journal">Журнал</a>
+  <a class="nav-link" href="/events">События</a>
+  <a class="nav-link" href="/audit">Аудит</a>
+  <a class="nav-link" href="/abonement">Абонемент</a>
+  <a class="nav-link" href="/administration">Администрация</a>
+  <a class="nav-link" href="/payments">Платежи / Баланс</a>
+  <a class="nav-link" href="/pay">QR Төлем</a>
+  <a class="nav-link" href="/client">Клиент статус</a>
+  <a class="nav-link logout" href="/logout">Шығу</a>
+</nav>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div>
+            <h1>События</h1>
+            <p>Номер және дата бойынша іздеу</p>
+          </div>
+        </header>
+
+        <form class="filter-card" method="GET" action="/events">
+          <input
+            name="plate"
+            value="{{ plate or '' }}"
+            placeholder="Номер: 919DAU13"
+          />
+          <input name="date_from" value="{{ date_from or '' }}" type="date" />
+          <input name="date_to" value="{{ date_to or '' }}" type="date" />
+          <button class="btn primary" type="submit">Іздеу</button>
+          <a class="btn ghost link-btn" href="/events">Тазалау</a>
+        </form>
+
+        <section class="events-grid">
+          {% for e in events %}
+          <article class="event-card">
+            <div class="event-image">
+              {% if e.image_path %}
+              <img src="/{{ e.image_path }}" alt="car image" />
+              {% else %}
+              <div class="no-photo">Фото жоқ</div>
+              {% endif %}
+            </div>
+
+            <div class="event-info">
+              <div class="event-title-row">
+                <h2>{{ e.plate or 'Белгісіз' }}</h2>
+
+                {% if e.event_type == 'entry' %}
+                <span class="event-type entry">Кірді</span>
+                {% elif e.event_type == 'exit' %}
+                <span class="event-type exit">Шықты</span>
+                {% elif e.event_type == 'blacklist' %}
+                <span class="event-type black">BLACKLIST</span>
+                {% else %}
+                <span class="event-type">{{ e.event_type }}</span>
+                {% endif %}
+              </div>
+
+              <p><b>Пост:</b> {{ e.camera }}</p>
+              <p><b>Уақыты:</b> {{ e.created_at }}</p>
+            </div>
+          </article>
+          {% endfor %}
+        </section>
+      </main>
+    </div>
+    </script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="kk">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Аудит | Auezov Parking</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-logo image-logo">
+            <img src="/static/img/logo.png" alt="Auezov Logo" />
+          </div>
+          <div>
+            <h2>Auezov Parking</h2>
+            <span>Operator Panel</span>
+          </div>
+        </div>
+
+       <nav class="nav">
+  <a class="nav-link" href="/dashboard">АРМ</a>
+  <a class="nav-link" href="/journal">Журнал</a>
+  <a class="nav-link" href="/events">События</a>
+  <a class="nav-link" href="/audit">Аудит</a>
+  <a class="nav-link" href="/abonement">Абонемент</a>
+  <a class="nav-link" href="/administration">Администрация</a>
+  <a class="nav-link" href="/payments">Платежи / Баланс</a>
+  <a class="nav-link" href="/pay">QR Төлем</a>
+  <a class="nav-link" href="/client">Клиент статус</a>
+  <a class="nav-link logout" href="/logout">Шығу</a>
+</nav>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div>
+            <h1>Аудит</h1>
+            <p>Жүйеде жасалған өзгерістер қысқаша және түсінікті түрде</p>
+          </div>
+        </header>
+
+        <div class="audit-list">
+          {% for log in logs %}
+          <div class="audit-card">
+            <div class="audit-card-top">
+              <span class="plate-chip">{{ log.plate or '-' }}</span>
+              <span class="audit-date">{{ log.created_at }}</span>
+            </div>
+
+            <h3>{{ log.action }}</h3>
+
+            <div class="audit-grid">
+              <div>
+                <span>Бұрынғы мән</span>
+                <p>{{ log.old_value or '-' }}</p>
+              </div>
+
+              <div>
+                <span>Жаңа мән</span>
+                <p>{{ log.new_value or '-' }}</p>
+              </div>
+            </div>
+
+            <div class="audit-comment-box">{{ log.comment or '-' }}</div>
+          </div>
+          {% endfor %}
+        </div>
+      </main>
+    </div>
+    </script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

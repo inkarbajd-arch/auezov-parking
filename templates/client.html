@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="kk">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Клиент статус | Auezov Parking</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-logo image-logo">
+            <img src="/static/img/logo.png" alt="Auezov Logo" />
+          </div>
+          <div>
+            <h2>Auezov Parking</h2>
+            <span>Client Terminal</span>
+          </div>
+        </div>
+
+      <nav class="nav">
+  <a class="nav-link" href="/dashboard">АРМ</a>
+  <a class="nav-link" href="/journal">Журнал</a>
+  <a class="nav-link" href="/events">События</a>
+  <a class="nav-link" href="/audit">Аудит</a>
+  <a class="nav-link" href="/abonement">Абонемент</a>
+  <a class="nav-link" href="/administration">Администрация</a>
+  <a class="nav-link" href="/payments">Платежи / Баланс</a>
+  <a class="nav-link" href="/pay">QR Төлем</a>
+  <a class="nav-link" href="/client">Клиент статус</a>
+  <a class="nav-link logout" href="/logout">Шығу</a>
+</nav>
+      </aside>
+
+      <main class="client-main">
+        <div class="client-card pro">
+          <div class="client-icon">🚘</div>
+          <h1>Auezov Parking</h1>
+          <p>Номеріңізді жазыңыз да, батырманы сырғытыңыз</p>
+
+          <input
+            id="clientPlate"
+            class="client-input"
+            placeholder="Мысалы: 919DAU13"
+          />
+
+          <div class="slider-box">
+            <div class="slider-track">
+              <div class="slider-btn" id="slider">➜</div>
+            </div>
+            <span>Статусты тексеру</span>
+          </div>
+
+          <div id="clientResult" class="client-result">
+            <p>Мұнда номер бойынша статус шығады.</p>
+          </div>
+        </div>
+      </main>
+    </div>
+    </script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

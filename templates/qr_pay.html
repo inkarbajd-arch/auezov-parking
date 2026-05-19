@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="kk">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>QR Төлем | Auezov Parking</title>
+    <link rel="stylesheet" href="/static/style.css" />
+
+    <style>
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        background: radial-gradient(circle at top, #123456, #020617);
+        color: white;
+        font-family: Arial, sans-serif;
+      }
+
+      .pay-box {
+        width: min(520px, 92%);
+        padding: 34px;
+        border-radius: 28px;
+        background: rgba(15, 23, 42, 0.92);
+        border: 1px solid rgba(56, 189, 248, 0.25);
+        box-shadow: 0 0 60px rgba(56, 189, 248, 0.25);
+        text-align: center;
+      }
+
+      h1 {
+        font-size: 34px;
+        margin-bottom: 16px;
+      }
+
+      p {
+        color: #bfdbfe;
+        margin-bottom: 18px;
+      }
+
+      input {
+        width: 100%;
+        height: 58px;
+        box-sizing: border-box;
+        border-radius: 18px;
+        border: 1px solid rgba(56, 189, 248, 0.35);
+        background: #020617;
+        color: white;
+        padding: 0 18px;
+        font-size: 20px;
+        margin-bottom: 16px;
+        outline: none;
+        text-align: center;
+        font-weight: 900;
+        letter-spacing: 1px;
+      }
+
+      .pay-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        margin-top: 14px;
+      }
+
+      button {
+        height: 56px;
+        border: none;
+        border-radius: 16px;
+        font-weight: 900;
+        color: white;
+        cursor: pointer;
+        font-size: 15px;
+      }
+
+      .confirm {
+        background: linear-gradient(135deg, #0ea5e9, #22c55e);
+      }
+
+      .cancel {
+        background: linear-gradient(135deg, #ef4444, #f97316);
+      }
+
+      .pay {
+        width: 100%;
+        margin-top: 16px;
+        background: linear-gradient(135deg, #22c55e, #14b8a6);
+        display: none;
+      }
+
+      .result {
+        margin-top: 20px;
+        padding: 18px;
+        border-radius: 18px;
+        background: rgba(56, 189, 248, 0.1);
+        border: 1px solid rgba(56, 189, 248, 0.18);
+        display: none;
+      }
+
+      .amount {
+        font-size: 36px;
+        font-weight: 900;
+        color: #4ade80;
+        margin-top: 10px;
+      }
+
+      .back-link {
+        display: inline-block;
+        margin-top: 18px;
+        color: #93c5fd;
+        text-decoration: none;
+        font-weight: 800;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="pay-box">
+      <h1>Auezov Parking</h1>
+      <p>Машина номеріңізді енгізіңіз</p>
+
+      <input id="plate" placeholder="Мысалы: 858SKA02" />
+
+      <div class="pay-actions">
+        <button class="confirm" onclick="checkPayment()">Подтвердить</button>
+        <button class="cancel" onclick="cancelPayment()">Отменить</button>
+      </div>
+
+      <div id="result" class="result"></div>
+
+      <button id="payBtn" class="pay" onclick="makePayment()">Оплатить</button>
+
+      <a class="back-link" href="/qr">← QR бетіне қайту</a>
+    </div>
+
+    <script>
+      let currentPlate = "";
+      let currentAmount = 0;
+
+      function normalizePlate(value) {
+        return String(value || "")
+          .toUpperCase()
+          .replace(/\s+/g, "")
+          .replace(/-/g, "")
+          .replace(/_/g, "");
+      }
+
+      function postForm(url, data) {
+        const fd = new FormData();
+        Object.keys(data).forEach((key) => fd.append(key, data[key]));
+        return fetch(url, { method: "POST", body: fd }).then((r) => r.json());
+      }
+
+      function checkPayment() {
+        const plate = normalizePlate(document.getElementById("plate").value);
+
+        if (!plate) {
+          alert("Номер жазыңыз");
+          return;
+        }
+
+        postForm("/api/qr-check", { plate }).then((data) => {
+          const result = document.getElementById("result");
+          const payBtn = document.getElementById("payBtn");
+
+          result.style.display = "block";
+
+          if (!data.ok) {
+            result.innerHTML = `<b>${data.message}</b>`;
+            payBtn.style.display = "none";
+            return;
+          }
+
+          currentPlate = data.plate;
+          currentAmount = data.amount;
+
+          result.innerHTML = `
+        <b>Номер:</b> ${data.plate}<br>
+        <b>Уақыты:</b> ${data.minutes || 0} минут
+        <div class="amount">${data.amount} ₸</div>
+      `;
+
+          payBtn.style.display = data.amount > 0 ? "block" : "none";
+        });
+      }
+
+      function makePayment() {
+        postForm("/api/qr-pay", {
+          plate: currentPlate,
+          amount: currentAmount,
+        }).then((data) => {
+          if (data.ok) {
+            document.getElementById("result").innerHTML = `
+          <h2>✅ Төлем қабылданды</h2>
+          <p>${currentPlate}</p>
+          <div class="amount">${currentAmount} ₸</div>
+        `;
+            document.getElementById("payBtn").style.display = "none";
+          } else {
+            alert(data.message || "Қате шықты");
+          }
+        });
+      }
+
+      function cancelPayment() {
+        document.getElementById("plate").value = "";
+        document.getElementById("result").style.display = "none";
+        document.getElementById("payBtn").style.display = "none";
+      }
+    </script>
+  </body>
+</html>
