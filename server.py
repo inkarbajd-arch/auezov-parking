@@ -2,6 +2,9 @@ import math
 import os
 import re
 import time
+from flask import request
+import requests
+from pathlib import Path
 from datetime import datetime, timedelta
 
 import cv2
@@ -133,13 +136,29 @@ def calculate_amount_by_time(entry_time, exit_time=None):
     return minutes, amount
 
 
-def encode_frame(frame):
-    ok, buffer = cv2.imencode(".jpg", frame)
+def encode_frame(frame, remote=False):
+    if remote:
+        frame = cv2.resize(frame, (640, 360))
+        quality = 55
+    else:
+        frame = cv2.resize(frame, (1280, 720))
+        quality = 85
+
+    ok, buffer = cv2.imencode(
+        ".jpg",
+        frame,
+        [int(cv2.IMWRITE_JPEG_QUALITY), quality]
+    )
 
     if not ok:
         return b""
 
-    return b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + buffer.tobytes() + b"\r\n"
+    return (
+        b"--frame\r\n"
+        b"Content-Type: image/jpeg\r\n\r\n" +
+        buffer.tobytes() +
+        b"\r\n"
+    )
 
 
 def no_signal_frame(text):
@@ -224,11 +243,51 @@ def open_droidcam():
 
     return None
 
+RENDER_API = "https://auezovparking.xyz/api/sync-entry"
+
+
+def send_to_render(plate, post, direction, image_path=""):
+    try:
+        requests.post(
+            RENDER_API,
+            json={
+                "plate": plate,
+                "post": post,
+                "direction": direction,
+                "image_path": image_path
+            },
+            timeout=5
+        )
+
+        print("🌐 Render-ге жіберілді:", plate)
+
+    except Exception as e:
+        print("⚠️ Render sync қатесі:", e)
+
+
+def cleanup_old_captures(limit=100):
+    folder = Path("static/captures")
+
+    if not folder.exists():
+        return
+
+    files = sorted(
+        folder.glob("*.jpg"),
+        key=lambda x: x.stat().st_mtime,
+        reverse=True
+    )
+
+    for old_file in files[limit:]:
+        try:
+            old_file.unlink()
+        except:
+            pass
 
 def save_frame(frame, camera_name):
     filename = f"{camera_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
     path = os.path.join(UPLOAD_DIR, filename)
     cv2.imwrite(path, frame)
+    cleanup_old_captures(100)
     return path.replace("\\", "/")
 
 
@@ -364,6 +423,12 @@ def process_plate(frame, camera_name):
         if camera_name == "entry":
             if not barriers["cam1"]["fixed_close"]:
                 add_entry(plate, "Гл корпус кіріс", image_path)
+                send_to_render(
+    plate,
+    "Гл корпус кіріс",
+    "entry",
+    image_path
+)
 
                 if free:
                     mark_last_log_free(plate, free_type)
@@ -373,6 +438,12 @@ def process_plate(frame, camera_name):
         else:
             if not barriers["cam2"]["fixed_close"]:
                 ok = add_exit(plate, "Гл корпус шығыс", image_path)
+                send_to_render(
+    plate,
+    "Гл корпус шығыс",
+    "exit",
+    image_path
+)
 
                 if ok and free:
                     mark_last_log_free(plate, free_type)
@@ -437,13 +508,13 @@ def reset_camera(camera_name):
     return exit_cap
 
 
-def generate_frames(camera_name):
+def generate_frames(camera_name, remote=False):
     while True:
         cap = get_camera(camera_name)
 
         if cap is None:
             text = "Laptop kamera kosylmady" if camera_name == "entry" else "DroidCam kosylmady"
-            yield encode_frame(no_signal_frame(text))
+            yield encode_frame(no_signal_frame(text), remote=remote)
             time.sleep(1)
             continue
 
@@ -451,14 +522,19 @@ def generate_frames(camera_name):
 
         if not ok or frame is None or frame.size == 0:
             reset_camera(camera_name)
-            yield encode_frame(no_signal_frame("Kamera kadr bermedi"))
+            yield encode_frame(no_signal_frame("Kamera kadr bermedi"), remote=remote)
             time.sleep(1)
             continue
 
         plate = process_plate(frame, camera_name)
         frame = draw_overlay(frame, camera_name, plate)
 
-        yield encode_frame(frame)
+        yield encode_frame(frame, remote=remote)
+
+        if remote:
+            time.sleep(0.2)
+        else:
+            time.sleep(0.03)
 
 
 @app.route("/")
@@ -775,7 +851,18 @@ def video(camera):
         return "Camera not found", 404
 
     return Response(
-        generate_frames(camera),
+        generate_frames(camera, remote=False),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+@app.route("/remote-video/<camera>")
+def remote_video(camera):
+    if camera not in ["entry", "exit"]:
+        return "Camera not found", 404
+
+    return Response(
+        generate_frames(camera, remote=True),
         mimetype="multipart/x-mixed-replace; boundary=frame",
     )
 
@@ -1219,6 +1306,25 @@ def api_balance():
     add_audit(plate, "Balance", "", str(amount), operation)
 
     return jsonify({"ok": True})
+
+@app.route("/api/sync-entry", methods=["POST"])
+def api_sync_entry():
+    data = request.get_json(silent=True) or {}
+
+    plate = normalize_plate(data.get("plate", ""))
+    post = data.get("post", "Гл корпус кіріс")
+    direction = data.get("direction", "entry")
+    image_path = data.get("image_path", "")
+
+    if not plate:
+        return {"ok": False, "error": "plate required"}, 400
+
+    if direction == "exit":
+        ok = add_exit(plate, post, image_path)
+        return {"ok": True, "plate": plate, "direction": "exit", "saved": ok}
+
+    add_entry(plate, post, image_path)
+    return {"ok": True, "plate": plate, "direction": "entry", "saved": True}
 
 
 @app.route("/api/client-status", methods=["POST"])
