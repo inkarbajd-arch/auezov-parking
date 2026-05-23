@@ -275,13 +275,20 @@ def send_to_render(plate, camera, event_type, image_path=None):
 
         files = None
 
-        if image_path and os.path.exists(image_path):
+        real_image_path = image_path
+
+        if image_path and image_path.startswith("/static/"):
+            real_image_path = image_path.lstrip("/")
+
+        if real_image_path and os.path.exists(real_image_path):
             files = {
-                "image": open(image_path, "rb")
+                "image": open(real_image_path, "rb")
             }
+        else:
+            print("⚠️ Сурет табылмады:", image_path, "=>", real_image_path)
 
         response = requests.post(
-            RENDER_API,
+            "https://auezovparking.xyz/api/remote-entry",
             data=data,
             files=files,
             timeout=30,
