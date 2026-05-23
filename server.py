@@ -261,10 +261,11 @@ def open_droidcam():
 RENDER_API = "https://auezovparking.xyz/api/sync-entry"
 
 
+RENDER_API = "https://auezovparking.xyz/api/remote-entry"
+
+
 def send_to_render(plate, camera, event_type, image_path=None):
     try:
-        url = "https://auezovparking.xyz/api/remote-entry"
-
         data = {
             "secret": "auezov-secret-2026",
             "plate": plate,
@@ -272,22 +273,31 @@ def send_to_render(plate, camera, event_type, image_path=None):
             "camera": camera,
         }
 
-        files = {}
+        files = None
 
         if image_path and os.path.exists(image_path):
-            files["image"] = open(image_path, "rb")
+            files = {
+                "image": open(image_path, "rb")
+            }
 
         response = requests.post(
-            url,
+            RENDER_API,
             data=data,
             files=files,
-            timeout=20
+            timeout=30,
         )
 
-        print("☁️ Render sync:", response.text)
+        if files:
+            files["image"].close()
+
+        print("☁️ Render status:", response.status_code)
+        print("☁️ Render response:", response.text)
+
+        return response.status_code == 200
 
     except Exception as e:
         print("⚠️ Render sync қатесі:", e)
+        return False
 
 
 def cleanup_old_captures(limit=100):
@@ -1562,9 +1572,27 @@ def client_status():
     plate = normalize_plate(request.form.get("plate", ""))
     messages = []
 
+    if not plate:
+        return jsonify({
+            "ok": True,
+            "plate": plate,
+            "messages": ["Номер енгізілмеді."]
+        })
+
     db = get_db()
 
-    log = db.execute(
+    unpaid_logs = db.execute(
+        """
+        SELECT *
+        FROM vehicle_logs
+        WHERE plate = ?
+        AND COALESCE(paid, 0) = 0
+        ORDER BY id DESC
+        """,
+        (plate,),
+    ).fetchall()
+
+    any_log = db.execute(
         """
         SELECT *
         FROM vehicle_logs
@@ -1575,31 +1603,49 @@ def client_status():
         (plate,),
     ).fetchone()
 
-    listed = db.execute("SELECT * FROM lists WHERE plate = ?", (plate,)).fetchone()
-    balance = db.execute("SELECT * FROM balances WHERE plate = ?", (plate,)).fetchone()
+    listed = db.execute(
+        "SELECT * FROM lists WHERE plate = ?",
+        (plate,),
+    ).fetchone()
+
+    balance = db.execute(
+        "SELECT * FROM balances WHERE plate = ?",
+        (plate,),
+    ).fetchone()
+
     db.close()
 
-    if not plate:
-        messages.append("Номер енгізілмеді.")
+    free, free_type = has_free_access(plate)
+
+    if free:
+        messages.append(f"Сізде тегін кіру рұқсаты бар: {free_type}.")
+        messages.append("Қарыз жоқ.")
+
+    elif not any_log:
+        messages.append("Сіздің номеріңіз журналда табылмады.")
+
+    elif unpaid_logs:
+        total_amount = 0
+        total_minutes = 0
+
+        for log in unpaid_logs:
+            amount = int(log["amount"] or 0)
+            minutes = int(log["duration_minutes"] or 0)
+
+            if amount <= 0:
+                minutes, amount = calculate_amount_by_time(
+                    log["entry_time"],
+                    log["exit_time"],
+                )
+
+            total_amount += int(amount or 0)
+            total_minutes += int(minutes or 0)
+
+        messages.append(f"Төлеу керек сома: {total_amount} ₸")
+        messages.append(f"Жалпы тұрған уақыт: {total_minutes} минут")
+
     else:
-        free, free_type = has_free_access(plate)
-
-        if free:
-            messages.append(f"Сізде тегін кіру рұқсаты бар: {free_type}.")
-            messages.append("Қарыз жоқ.")
-
-        elif not log:
-            messages.append("Сіздің номеріңіз журналда табылмады.")
-
-        else:
-            minutes, real_amount = calculate_amount_by_time(log["entry_time"], log["exit_time"])
-            paid = int(log["paid"] or 0)
-
-            if paid == 0:
-                messages.append(f"Төлеу керек сома: {real_amount} ₸")
-                messages.append(f"Парковкада тұрған уақыт: {minutes} минут")
-            else:
-                messages.append("Төлем жасалған. Қарыз жоқ.")
+        messages.append("Төлем жасалған. Қарыз жоқ.")
 
     if listed:
         if listed["type"] == "black":
@@ -1609,9 +1655,6 @@ def client_status():
 
     if balance:
         messages.append(f"Сіздің баланс: {balance['balance']} ₸")
-
-    if not messages:
-        messages.append("Мәселе табылған жоқ. Барлығы дұрыс.")
 
     return jsonify({
         "ok": True,
@@ -1628,9 +1671,10 @@ def remote_entry():
 
     plate = normalize_plate(request.form.get("plate", ""))
     direction = request.form.get("direction", "entry")
+    camera = request.form.get("camera", "Гл корпус кіріс")
 
     if not plate:
-        return jsonify({"ok": False, "message": "Номер жоқ"})
+        return jsonify({"ok": False, "message": "Номер жоқ"}), 400
 
     image_path = None
 
@@ -1647,13 +1691,26 @@ def remote_entry():
             image_path = f"/static/captures/{filename}"
 
     if direction == "entry":
-        add_entry(plate, "Гл корпус кіріс", image_path)
-    elif direction == "exit":
-        add_exit(plate, "Гл корпус шығыс", image_path)
-    else:
-        return jsonify({"ok": False, "message": "direction қате"})
+        saved = add_entry(plate, camera, image_path)
 
-    return jsonify({"ok": True, "plate": plate, "image": image_path})
+        if not saved:
+            add_event(plate, camera, "entry_repeat", image_path)
+
+    elif direction == "exit":
+        saved = add_exit(plate, camera, image_path)
+
+        if not saved:
+            add_event(plate, camera, "exit_not_found", image_path)
+
+    else:
+        return jsonify({"ok": False, "message": "direction қате"}), 400
+
+    return jsonify({
+        "ok": True,
+        "plate": plate,
+        "direction": direction,
+        "image": image_path
+    })
 
 if __name__ == "__main__":
     init_db()
