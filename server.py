@@ -442,6 +442,51 @@ def send_to_cloud(plate, direction, image_path=None):
     except Exception as e:
         print("⚠️ Cloud sync қатесі:", e)
 
+BAD_WORDS = [
+    "PROB",
+    "CANADA",
+    "VIETNAM",
+    "KINGDOM",
+    "LATVIA",
+    "NORWAY",
+    "AUEZOV",
+    "PARKING",
+]
+
+
+def is_good_plate(plate):
+    plate = normalize_plate(plate)
+
+    if len(plate) < 6 or len(plate) > 10:
+        return False
+
+    if any(word in plate for word in BAD_WORDS):
+        return False
+
+    if not any(c.isdigit() for c in plate):
+        return False
+
+    if not any(c.isalpha() for c in plate):
+        return False
+
+    # Қазақстан
+    if re.fullmatch(r"\d{3}[A-Z]{3}\d{2}", plate):
+        return True
+
+    # Ресей
+    if re.fullmatch(r"[A-Z]\d{3}[A-Z]{2}\d{2,3}", plate):
+        return True
+
+    # Шетел варианттары
+    if re.fullmatch(r"[A-Z]{1,3}\d{3,5}", plate):
+        return True
+
+    if re.fullmatch(r"\d{3}[A-Z]\d{3,4}", plate):
+        return True
+
+    return False
+
+
 def process_plate(frame, camera_name):
     now = time.time()
 
@@ -463,18 +508,22 @@ def process_plate(frame, camera_name):
                     raw_text = str(item.ocr.text or "")
                     clean = normalize_plate(raw_text)
 
-                    if clean:
+                    if is_good_plate(clean):
                         plate = clean
-                        print("OCR:", raw_text, "=>", plate)
+                        print("OCR GOOD:", raw_text, "=>", plate)
                         break
+                    else:
+                        print("OCR REJECT:", raw_text, "=>", clean)
+
             except Exception:
                 continue
 
-        if len(plate) < 4:
+        if not is_good_plate(plate):
             if camera_name == "entry":
                 state["cam1_plate"] = "---"
             else:
                 state["cam2_plate"] = "---"
+
             return "---"
 
         if plate == plate_confirm[camera_name]["last"]:
@@ -488,28 +537,27 @@ def process_plate(frame, camera_name):
             return state["cam1_plate"] if camera_name == "entry" else state["cam2_plate"]
 
         if camera_name == "entry":
-            if plate == state["cam1_plate"]:
-                return plate
-
             state["cam1_plate"] = plate
             camera_label = "Гл корпус кіріс"
             event_type = "entry"
-
         else:
-            if plate == state["cam2_plate"]:
-                return plate
-
             state["cam2_plate"] = plate
             camera_label = "Гл корпус шығыс"
             event_type = "exit"
 
         image_path = save_frame(frame, camera_name)
         print("💾 Сақталуда:", plate)
-        
-        send_to_cloud(plate, event_type, image_path)
 
         if is_blacklisted(plate):
             add_event(plate, "Гл корпус", "blacklist", image_path)
+
+            send_to_render(
+                plate,
+                camera_label,
+                event_type,
+                image_path,
+            )
+
             print(f"⛔ BLACKLIST: {plate}")
 
             plate_confirm[camera_name]["last"] = ""
@@ -523,27 +571,39 @@ def process_plate(frame, camera_name):
             saved = add_entry(plate, camera_label, image_path)
 
             if saved:
-                send_to_render(plate, camera_label, event_type, image_path)
+                send_to_render(
+                    plate,
+                    camera_label,
+                    event_type,
+                    image_path,
+                )
 
                 if free:
                     mark_last_log_free(plate, free_type)
 
                 print(f"✅ ENTRY SAVED TO JOURNAL: {plate}")
+
             else:
-                print(f"⚠️ ENTRY сақталмады, бұл номер already inside болуы мүмкін: {plate}")
+                print(f"⚠️ ENTRY сақталмады (inside болуы мүмкін): {plate}")
 
         else:
             saved = add_exit(plate, camera_label, image_path)
 
             if saved:
-                send_to_render(plate, camera_label, event_type, image_path)
+                send_to_render(
+                    plate,
+                    camera_label,
+                    event_type,
+                    image_path,
+                )
 
                 if free:
                     mark_last_log_free(plate, free_type)
 
                 print(f"✅ EXIT SAVED TO JOURNAL: {plate}")
+
             else:
-                print(f"⚠️ EXIT сақталмады, журналда inside табылмады: {plate}")
+                print(f"⚠️ EXIT сақталмады (inside табылмады): {plate}")
 
         plate_confirm[camera_name]["last"] = ""
         plate_confirm[camera_name]["count"] = 0
@@ -552,7 +612,12 @@ def process_plate(frame, camera_name):
 
     except Exception as e:
         print("❌ ALPR оқу қатесі:", e)
-        return state["cam1_plate"] if camera_name == "entry" else state["cam2_plate"]
+
+        return (
+            state["cam1_plate"]
+            if camera_name == "entry"
+            else state["cam2_plate"]
+        )
 
 
 def draw_overlay(frame, camera_name, plate):
