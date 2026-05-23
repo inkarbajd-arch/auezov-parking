@@ -261,20 +261,30 @@ def open_droidcam():
 RENDER_API = "https://auezovparking.xyz/api/sync-entry"
 
 
-def send_to_render(plate, post, direction, image_path=""):
+def send_to_render(plate, camera, event_type, image_path=None):
     try:
-        requests.post(
-            RENDER_API,
-            json={
-                "plate": plate,
-                "post": post,
-                "direction": direction,
-                "image_path": image_path
-            },
-            timeout=5
+        url = "https://auezovparking.xyz/api/remote-entry"
+
+        data = {
+            "secret": "auezov-secret-2026",
+            "plate": plate,
+            "direction": event_type,
+            "camera": camera,
+        }
+
+        files = {}
+
+        if image_path and os.path.exists(image_path):
+            files["image"] = open(image_path, "rb")
+
+        response = requests.post(
+            url,
+            data=data,
+            files=files,
+            timeout=20
         )
 
-        print("🌐 Render-ге жіберілді:", plate)
+        print("☁️ Render sync:", response.text)
 
     except Exception as e:
         print("⚠️ Render sync қатесі:", e)
@@ -457,7 +467,7 @@ BAD_WORDS = [
 def is_good_plate(plate):
     plate = normalize_plate(plate)
 
-    if len(plate) < 6 or len(plate) > 10:
+    if len(plate) < 5 or len(plate) > 10:
         return False
 
     if any(word in plate for word in BAD_WORDS):
@@ -469,22 +479,16 @@ def is_good_plate(plate):
     if not any(c.isalpha() for c in plate):
         return False
 
-    # Қазақстан
-    if re.fullmatch(r"\d{3}[A-Z]{3}\d{2}", plate):
-        return True
+    patterns = [
+        r"\d{3}[A-Z]{3}\d{2}",          # KZ: 858SKA02
+        r"[A-Z]\d{3}[A-Z]{2}\d{2,3}",  # RU: A222MP77
+        r"[A-Z]{2}\d{4}[A-Z]{2}",      # UA: KA0132CO
+        r"[A-Z]{1,3}\d{3,5}",          # BT4732
+        r"\d{3}[A-Z]\d{3,4}",          # 147D0647
+        r"[A-Z]{1,3}\d{2,4}[A-Z]{1,3}",# mixed foreign
+    ]
 
-    # Ресей
-    if re.fullmatch(r"[A-Z]\d{3}[A-Z]{2}\d{2,3}", plate):
-        return True
-
-    # Шетел варианттары
-    if re.fullmatch(r"[A-Z]{1,3}\d{3,5}", plate):
-        return True
-
-    if re.fullmatch(r"\d{3}[A-Z]\d{3,4}", plate):
-        return True
-
-    return False
+    return any(re.fullmatch(pattern, plate) for pattern in patterns)
 
 
 def process_plate(frame, camera_name):
@@ -944,46 +948,47 @@ def qr_check():
 
     db = get_db()
 
-    log = db.execute(
-        """
+    logs = db.execute("""
         SELECT *
         FROM vehicle_logs
         WHERE plate = ?
+        AND COALESCE(paid, 0) = 0
         ORDER BY id DESC
-        LIMIT 1
-        """,
-        (plate,),
-    ).fetchone()
+    """, (plate,)).fetchall()
 
-    db.close()
-
-    if not log:
+    if not logs:
+        db.close()
         return jsonify({
             "ok": False,
-            "message": "Номер журналда табылмады"
+            "message": "Номер журналда табылмады немесе қарыз жоқ"
         })
 
-    if int(log["paid"] or 0) == 1:
-        return jsonify({
-            "ok": True,
-            "plate": plate,
-            "amount": 0,
-            "minutes": log["duration_minutes"],
-            "message": "Төлем жасалған"
-        })
+    total_amount = 0
+    total_minutes = 0
 
-    minutes, amount = calculate_amount_by_time(
-        log["entry_time"],
-        log["exit_time"],
-    )
+    for log in logs:
+        amount = int(log["amount"] or 0)
+        minutes = int(log["duration_minutes"] or 0)
+
+        if amount <= 0:
+            minutes, amount = calculate_amount_by_time(
+                log["entry_time"],
+                log["exit_time"],
+            )
+
+        total_amount += int(amount or 0)
+        total_minutes += int(minutes or 0)
+
+    db.close()
 
     return jsonify({
         "ok": True,
         "plate": plate,
-        "amount": amount,
-        "minutes": minutes,
+        "amount": total_amount,
+        "debt": total_amount,
+        "minutes": total_minutes,
+        "message": f"Жалпы тұрған уақыт: {total_minutes} минут. Төлеу керек: {total_amount} ₸"
     })
-
 
 @app.route("/api/qr-pay", methods=["POST"])
 def qr_pay():
@@ -1000,6 +1005,32 @@ def qr_pay():
 
     db = get_db()
 
+    unpaid_logs = db.execute(
+        """
+        SELECT *
+        FROM vehicle_logs
+        WHERE plate = ?
+        AND COALESCE(paid, 0) = 0
+        """,
+        (plate,),
+    ).fetchall()
+
+    if not unpaid_logs:
+        db.close()
+        return jsonify({
+            "ok": False,
+            "message": "Төленбеген қарыз табылмады"
+        })
+
+    total_amount = 0
+
+    for log in unpaid_logs:
+        minutes, log_amount = calculate_amount_by_time(
+            log["entry_time"],
+            log["exit_time"],
+        )
+        total_amount += int(log_amount or 0)
+
     db.execute(
         """
         INSERT INTO payments(
@@ -1012,7 +1043,7 @@ def qr_pay():
         """,
         (
             plate,
-            amount,
+            total_amount,
             "QR DEMO",
             now,
         ),
@@ -1022,13 +1053,8 @@ def qr_pay():
         """
         UPDATE vehicle_logs
         SET paid = 1
-        WHERE id = (
-            SELECT id
-            FROM vehicle_logs
-            WHERE plate = ?
-            ORDER BY id DESC
-            LIMIT 1
-        )
+        WHERE plate = ?
+        AND COALESCE(paid, 0) = 0
         """,
         (plate,),
     )
@@ -1040,14 +1066,14 @@ def qr_pay():
         plate,
         "QR төлем",
         "",
-        f"{amount} ₸",
+        f"{total_amount} ₸",
         "Demo payment"
     )
 
     return jsonify({
-        "ok": True
+        "ok": True,
+        "amount": total_amount
     })
-
 
 @app.route("/video/<camera>")
 def video(camera):
