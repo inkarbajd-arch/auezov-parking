@@ -3,61 +3,122 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>QR Төлем</title>
-
+    <title>QR Төлем | Auezov Parking</title>
     <link rel="stylesheet" href="/static/style.css" />
 
     <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: radial-gradient(circle at top, #123456, #020617);
+        color: white;
+        font-family: Arial, sans-serif;
+      }
+
+      .qr-page {
+        display: flex;
+        min-height: 100vh;
+      }
+
+      .qr-sidebar {
+        width: 300px;
+        background: rgba(2, 6, 23, 0.82);
+        border-right: 1px solid rgba(56, 189, 248, 0.16);
+        padding: 34px 28px;
+        box-sizing: border-box;
+      }
+
+      .qr-logo {
+        font-size: 26px;
+        font-weight: 900;
+        margin-bottom: 55px;
+        line-height: 1.15;
+      }
+
+      .qr-nav {
+        display: grid;
+        gap: 22px;
+      }
+
+      .qr-nav a {
+        color: #cbd5e1;
+        text-decoration: none;
+        font-size: 20px;
+        padding: 16px 18px;
+        border-radius: 16px;
+      }
+
+      .qr-nav a.active,
+      .qr-nav a:hover {
+        background: rgba(56, 189, 248, 0.15);
+        color: white;
+      }
+
+      .qr-main {
+        flex: 1;
+        display: grid;
+        place-items: center;
+        padding: 40px;
+        box-sizing: border-box;
+      }
+
       .qr-panel {
-        max-width: 920px;
-        margin: 40px auto;
-        padding: 34px;
+        width: min(900px, 96%);
+        padding: 36px;
         border-radius: 28px;
-        background: rgba(15, 23, 42, 0.92);
-        border: 1px solid rgba(56, 189, 248, 0.22);
-        box-shadow: 0 0 60px rgba(56, 189, 248, 0.18);
+        background: rgba(15, 23, 42, 0.94);
+        border: 1px solid rgba(56, 189, 248, 0.24);
+        box-shadow: 0 0 60px rgba(56, 189, 248, 0.22);
         text-align: center;
       }
 
-      .qr-panel h2 {
-        margin: 0 0 28px;
-        font-size: 34px;
-        color: white;
+      .qr-panel h1 {
+        margin: 0 0 30px;
+        font-size: 38px;
       }
 
       .qr-grid {
         display: grid;
-        grid-template-columns: repeat(2, minmax(260px, 1fr));
-        gap: 28px;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 30px;
       }
 
       .qr-card {
-        padding: 26px;
+        padding: 30px;
         border-radius: 24px;
-        background: rgba(2, 6, 23, 0.75);
-        border: 1px solid rgba(56, 189, 248, 0.18);
+        background: rgba(2, 6, 23, 0.72);
+        border: 1px solid rgba(56, 189, 248, 0.2);
       }
 
       .qr-card h3 {
-        color: white;
-        margin-bottom: 18px;
+        margin: 0 0 20px;
+        font-size: 22px;
       }
 
       .qr-card img {
-        width: 260px;
-        max-width: 100%;
-        border-radius: 18px;
+        width: 240px;
+        height: 240px;
         background: white;
         padding: 12px;
+        border-radius: 18px;
       }
 
       .qr-card p {
         color: #bfdbfe;
         font-weight: 800;
-        margin-top: 18px;
+        margin-top: 20px;
+        font-size: 16px;
       }
 
-      @media (max-width: 760px) {
+      @media (max-width: 850px) {
+        .qr-page {
+          display: block;
+        }
+
+        .qr-sidebar {
+          width: 100%;
+        }
+
         .qr-grid {
           grid-template-columns: 1fr;
         }
@@ -66,47 +127,48 @@
   </head>
 
   <body>
-    <div class="layout">
-      <aside class="sidebar">
-        <div class="logo">Auezov Parking</div>
+    <div class="qr-page">
+      <aside class="qr-sidebar">
+        <div class="qr-logo">Auezov<br />Parking</div>
 
-        <nav>
+        <nav class="qr-nav">
           <a href="/dashboard">АРМ</a>
           <a href="/journal">Журнал</a>
           <a href="/events">События</a>
+          <a href="/audit">Аудит</a>
+          <a href="/abonement">Абонемент</a>
+          <a href="/administration">Администрация</a>
           <a href="/payments">Платежи / Баланс</a>
-          <a href="/qr">QR Төлем</a>
+          <a class="active" href="/qr">QR Төлем</a>
+          <a href="/client">Клиент статус</a>
+          <a href="/logout">Шығу</a>
         </nav>
       </aside>
 
-      <main class="main-content">
-        <div class="qr-panel">
-          <h2>Auezov Parking QR</h2>
+      <main class="qr-main">
+        <section class="qr-panel">
+          <h1>Auezov Parking QR</h1>
 
           <div class="qr-grid">
             <div class="qr-card">
               <h3>Системаға кіру</h3>
-
               <img
-                src="https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=https://auezovparking.xyz/login"
+                src="https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=https://auezovparking.xyz/login"
                 alt="Login QR"
               />
-
               <p>Логин / пароль арқылы жүйеге кіру</p>
             </div>
 
             <div class="qr-card">
               <h3>QR Төлем</h3>
-
               <img
-                src="https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=https://auezovparking.xyz/pay"
+                src="https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=https://auezovparking.xyz/pay"
                 alt="Payment QR"
               />
-
               <p>Клиент номер жазып төлем жасайды</p>
             </div>
           </div>
-        </div>
+        </section>
       </main>
     </div>
   </body>
