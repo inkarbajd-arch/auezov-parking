@@ -414,6 +414,34 @@ def normalize_plate(text):
 
     return ""
 
+def send_to_cloud(plate, direction, image_path=None):
+    try:
+        data = {
+            "secret": "auezov-secret-2026",
+            "plate": plate,
+            "direction": direction,
+        }
+
+        files = {}
+
+        if image_path and os.path.exists(image_path):
+            files["image"] = open(image_path, "rb")
+
+        response = requests.post(
+            "https://auezovparking.xyz/api/remote-entry",
+            data=data,
+            files=files,
+            timeout=10,
+        )
+
+        if "image" in files:
+            files["image"].close()
+
+        print("☁️ Cloud sync:", response.json())
+
+    except Exception as e:
+        print("⚠️ Cloud sync қатесі:", e)
+
 def process_plate(frame, camera_name):
     now = time.time()
 
@@ -477,6 +505,8 @@ def process_plate(frame, camera_name):
 
         image_path = save_frame(frame, camera_name)
         print("💾 Сақталуда:", plate)
+        
+        send_to_cloud(plate, event_type, image_path)
 
         if is_blacklisted(plate):
             add_event(plate, "Гл корпус", "blacklist", image_path)
@@ -1483,14 +1513,28 @@ def remote_entry():
     if not plate:
         return jsonify({"ok": False, "message": "Номер жоқ"})
 
+    image_path = None
+
+    if "image" in request.files:
+        image = request.files["image"]
+
+        if image and image.filename:
+            os.makedirs("static/captures", exist_ok=True)
+
+            filename = f"remote_{direction}_{plate}_{int(time.time())}.jpg"
+            save_path = os.path.join("static", "captures", filename)
+
+            image.save(save_path)
+            image_path = f"/static/captures/{filename}"
+
     if direction == "entry":
-        add_entry(plate, "Remote camera", None)
+        add_entry(plate, "Гл корпус кіріс", image_path)
     elif direction == "exit":
-        add_exit(plate, "Remote camera", None)
+        add_exit(plate, "Гл корпус шығыс", image_path)
     else:
         return jsonify({"ok": False, "message": "direction қате"})
 
-    return jsonify({"ok": True, "plate": plate})
+    return jsonify({"ok": True, "plate": plate, "image": image_path})
 
 if __name__ == "__main__":
     init_db()
