@@ -71,8 +71,8 @@
                 <td>{{ log.entry_time }}</td>
                 <td>{{ log.exit_time or '-' }}</td>
                 <td>{{ log.entry_post }} / {{ log.exit_post or '-' }}</td>
-                <td>{{ log.duration_minutes }}</td>
-                <td>{{ log.amount }} ₸</td>
+                <td>{{ log.live_minutes }}</td>
+                <td>{{ log.live_amount }} ₸</td>
                 <td>
                   {% if log.paid %}
                   <span class="mini success-text">Төленді</span>

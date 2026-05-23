@@ -143,29 +143,44 @@
           .replace(/_/g, "");
       }
 
-      function postForm(url, data) {
+      async function postForm(url, data) {
         const fd = new FormData();
         Object.keys(data).forEach((key) => fd.append(key, data[key]));
-        return fetch(url, { method: "POST", body: fd }).then((r) => r.json());
+
+        const response = await fetch(url, {
+          method: "POST",
+          body: fd,
+        });
+
+        const text = await response.text();
+
+        try {
+          return JSON.parse(text);
+        } catch {
+          throw new Error(text || "JSON емес жауап келді");
+        }
       }
 
-      function checkPayment() {
+      async function checkPayment() {
         const plate = normalizePlate(document.getElementById("plate").value);
+        const result = document.getElementById("result");
+        const payBtn = document.getElementById("payBtn");
+
+        result.style.display = "block";
+        payBtn.style.display = "none";
 
         if (!plate) {
-          alert("Номер жазыңыз");
+          result.innerHTML = "<b>Номер жазыңыз</b>";
           return;
         }
 
-        postForm("/api/qr-check", { plate }).then((data) => {
-          const result = document.getElementById("result");
-          const payBtn = document.getElementById("payBtn");
+        result.innerHTML = "Ізделіп жатыр...";
 
-          result.style.display = "block";
+        try {
+          const data = await postForm("/api/qr-check", { plate });
 
           if (!data.ok) {
             result.innerHTML = `<b>${data.message}</b>`;
-            payBtn.style.display = "none";
             return;
           }
 
@@ -174,19 +189,28 @@
 
           result.innerHTML = `
         <b>Номер:</b> ${data.plate}<br>
-        <b>Уақыты:</b> ${data.minutes || 0} минут
+        <b>Баланс:</b> ${data.balance || 0} ₸<br>
+        <b>Қарыз:</b> ${data.debt || 0} ₸
         <div class="amount">${data.amount} ₸</div>
       `;
 
           payBtn.style.display = data.amount > 0 ? "block" : "none";
-        });
+        } catch (err) {
+          result.innerHTML = `
+        <b>Қате шықты</b><br>
+        <small>${err.message}</small>
+      `;
+          console.error(err);
+        }
       }
 
-      function makePayment() {
-        postForm("/api/qr-pay", {
-          plate: currentPlate,
-          amount: currentAmount,
-        }).then((data) => {
+      async function makePayment() {
+        try {
+          const data = await postForm("/api/qr-pay", {
+            plate: currentPlate,
+            amount: currentAmount,
+          });
+
           if (data.ok) {
             document.getElementById("result").innerHTML = `
           <h2>✅ Төлем қабылданды</h2>
@@ -197,7 +221,9 @@
           } else {
             alert(data.message || "Қате шықты");
           }
-        });
+        } catch (err) {
+          alert(err.message);
+        }
       }
 
       function cancelPayment() {

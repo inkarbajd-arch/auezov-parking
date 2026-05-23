@@ -6,6 +6,7 @@
     <title>События | Auezov Parking</title>
     <link rel="stylesheet" href="/static/style.css" />
   </head>
+
   <body>
     <div class="app-shell">
       <aside class="sidebar">
@@ -20,17 +21,17 @@
         </div>
 
         <nav class="nav">
-  <a class="nav-link" href="/dashboard">АРМ</a>
-  <a class="nav-link" href="/journal">Журнал</a>
-  <a class="nav-link" href="/events">События</a>
-  <a class="nav-link" href="/audit">Аудит</a>
-  <a class="nav-link" href="/abonement">Абонемент</a>
-  <a class="nav-link" href="/administration">Администрация</a>
-  <a class="nav-link" href="/payments">Платежи / Баланс</a>
-  <a class="nav-link" href="/pay">QR Төлем</a>
-  <a class="nav-link" href="/client">Клиент статус</a>
-  <a class="nav-link logout" href="/logout">Шығу</a>
-</nav>
+          <a class="nav-link" href="/dashboard">АРМ</a>
+          <a class="nav-link" href="/journal">Журнал</a>
+          <a class="nav-link active" href="/events">События</a>
+          <a class="nav-link" href="/audit">Аудит</a>
+          <a class="nav-link" href="/abonement">Абонемент</a>
+          <a class="nav-link" href="/administration">Администрация</a>
+          <a class="nav-link" href="/payments">Платежи / Баланс</a>
+          <a class="nav-link" href="/pay">QR Төлем</a>
+          <a class="nav-link" href="/client">Клиент статус</a>
+          <a class="nav-link logout" href="/logout">Шығу</a>
+        </nav>
       </aside>
 
       <main class="main-content">
@@ -81,13 +82,21 @@
 
               <p><b>Пост:</b> {{ e.camera }}</p>
               <p><b>Уақыты:</b> {{ e.created_at }}</p>
+
+              <form
+                method="POST"
+                action="/event/delete/{{ e.id }}"
+                onsubmit="return confirm('Осы событиені өшіреміз бе?');"
+              >
+                <button type="submit" class="delete-btn">Удалить</button>
+              </form>
             </div>
           </article>
           {% endfor %}
         </section>
       </main>
     </div>
-    </script>
+
     <script src="/static/app.js"></script>
   </body>
 </html>

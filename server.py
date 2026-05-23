@@ -2,7 +2,6 @@ import math
 import os
 import re
 import time
-from flask import request
 import requests
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -117,23 +116,39 @@ def normalize_plate(text):
     return text
 
 
+from datetime import datetime
+import math
+
 def calculate_amount_by_time(entry_time, exit_time=None):
-    if not entry_time:
+    try:
+        if not entry_time:
+            return 0, 0
+
+        entry_dt = datetime.strptime(entry_time, "%Y-%m-%d %H:%M:%S")
+
+        if exit_time:
+            exit_dt = datetime.strptime(exit_time, "%Y-%m-%d %H:%M:%S")
+        else:
+            exit_dt = datetime.now()
+
+        minutes = int((exit_dt - entry_dt).total_seconds() / 60)
+
+        if minutes < 0:
+            minutes = 0
+
+        # Алғашқы 2 сағат = 200 тг
+        if minutes <= 120:
+            amount = 200
+        else:
+            extra_minutes = minutes - 120
+            extra_hours = math.ceil(extra_minutes / 60)
+            amount = 200 + (extra_hours * 100)
+
+        return minutes, amount
+
+    except Exception as e:
+        print("❌ calculate_amount_by_time қатесі:", e)
         return 0, 0
-
-    start = datetime.strptime(entry_time, "%Y-%m-%d %H:%M:%S")
-    end = datetime.strptime(exit_time, "%Y-%m-%d %H:%M:%S") if exit_time else datetime.now()
-
-    minutes = max(int((end - start).total_seconds() // 60), 0)
-
-    amount = 200
-
-    if minutes > 120:
-        extra_minutes = minutes - 120
-        extra_hours = math.ceil(extra_minutes / 60)
-        amount += extra_hours * 100
-
-    return minutes, amount
 
 
 def encode_frame(frame, remote=False):
@@ -360,6 +375,44 @@ def mark_last_log_free(plate, free_type):
     db.commit()
     db.close()
 
+import re
+
+BAD_OCR_WORDS = (
+    "PLATE", "PREDICTION", "CHAR", "PROB", "PROBS", "NONE",
+    "REGION", "LICENSE", "TEXT", "SCORE"
+)
+
+def normalize_plate(text):
+    text = str(text or "").upper()
+
+    replace_map = {
+        "А": "A", "В": "B", "Е": "E", "К": "K", "М": "M",
+        "Н": "H", "О": "O", "Р": "P", "С": "C", "Т": "T",
+        "У": "Y", "Х": "X",
+    }
+
+    for old, new in replace_map.items():
+        text = text.replace(old, new)
+
+    text = re.sub(r"[^A-Z0-9]", "", text)
+
+    for bad in BAD_OCR_WORDS:
+        text = text.replace(bad, "")
+
+    patterns = [
+        r"[A-Z][0-9]{3}[A-Z]{2}[0-9]{2}",    # A222MP77
+        r"[A-Z][0-9]{3}[A-Z]{3}",            # A222MPY
+        r"[A-Z]{2}[0-9]{4}[A-Z]{2}",         # KA0132CO
+        r"[0-9]{3}[A-Z]{3}[0-9]{2}",         # 001DAU13
+        r"[A-Z]{1,2}[0-9]{3,4}[A-Z]{1,2}",   # запасной формат
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(0)
+
+    return ""
 
 def process_plate(frame, camera_name):
     now = time.time()
@@ -370,7 +423,7 @@ def process_plate(frame, camera_name):
     last_detect_time[camera_name] = now
 
     if alpr is None:
-        return state["cam1_plate"] if camera_name == "entry" else state["cam2_plate"]
+        return "---"
 
     try:
         results = alpr.predict(frame)
@@ -379,7 +432,7 @@ def process_plate(frame, camera_name):
         for item in results:
             try:
                 if hasattr(item, "ocr") and item.ocr:
-                    raw_text = item.ocr.text
+                    raw_text = str(item.ocr.text or "")
                     clean = normalize_plate(raw_text)
 
                     if clean:
@@ -390,7 +443,11 @@ def process_plate(frame, camera_name):
                 continue
 
         if len(plate) < 4:
-            return state["cam1_plate"] if camera_name == "entry" else state["cam2_plate"]
+            if camera_name == "entry":
+                state["cam1_plate"] = "---"
+            else:
+                state["cam2_plate"] = "---"
+            return "---"
 
         if plate == plate_confirm[camera_name]["last"]:
             plate_confirm[camera_name]["count"] += 1
@@ -405,50 +462,58 @@ def process_plate(frame, camera_name):
         if camera_name == "entry":
             if plate == state["cam1_plate"]:
                 return plate
+
             state["cam1_plate"] = plate
+            camera_label = "Гл корпус кіріс"
+            event_type = "entry"
+
         else:
             if plate == state["cam2_plate"]:
                 return plate
+
             state["cam2_plate"] = plate
+            camera_label = "Гл корпус шығыс"
+            event_type = "exit"
 
         image_path = save_frame(frame, camera_name)
         print("💾 Сақталуда:", plate)
 
         if is_blacklisted(plate):
             add_event(plate, "Гл корпус", "blacklist", image_path)
+            print(f"⛔ BLACKLIST: {plate}")
+
+            plate_confirm[camera_name]["last"] = ""
+            plate_confirm[camera_name]["count"] = 0
+
             return plate
 
         free, free_type = has_free_access(plate)
 
         if camera_name == "entry":
-            if not barriers["cam1"]["fixed_close"]:
-                add_entry(plate, "Гл корпус кіріс", image_path)
-                send_to_render(
-    plate,
-    "Гл корпус кіріс",
-    "entry",
-    image_path
-)
+            saved = add_entry(plate, camera_label, image_path)
+
+            if saved:
+                send_to_render(plate, camera_label, event_type, image_path)
 
                 if free:
                     mark_last_log_free(plate, free_type)
 
-                print(f"✅ ENTRY SAVED: {plate}")
+                print(f"✅ ENTRY SAVED TO JOURNAL: {plate}")
+            else:
+                print(f"⚠️ ENTRY сақталмады, бұл номер already inside болуы мүмкін: {plate}")
 
         else:
-            if not barriers["cam2"]["fixed_close"]:
-                ok = add_exit(plate, "Гл корпус шығыс", image_path)
-                send_to_render(
-    plate,
-    "Гл корпус шығыс",
-    "exit",
-    image_path
-)
+            saved = add_exit(plate, camera_label, image_path)
 
-                if ok and free:
+            if saved:
+                send_to_render(plate, camera_label, event_type, image_path)
+
+                if free:
                     mark_last_log_free(plate, free_type)
 
-                print(f"✅ EXIT SAVED: {plate}" if ok else f"⚠️ Табылмады: {plate}")
+                print(f"✅ EXIT SAVED TO JOURNAL: {plate}")
+            else:
+                print(f"⚠️ EXIT сақталмады, журналда inside табылмады: {plate}")
 
         plate_confirm[camera_name]["last"] = ""
         plate_confirm[camera_name]["count"] = 0
@@ -595,30 +660,46 @@ def journal():
         return redirect(url_for("login"))
 
     db = get_db()
-    rows = db.execute("SELECT * FROM vehicle_logs").fetchall()
+
+    rows = db.execute("""
+        SELECT * FROM vehicle_logs
+        ORDER BY id DESC
+    """).fetchall()
+
+    updated_logs = []
 
     for row in rows:
-        if not row["entry_time"] or int(row["paid"] or 0) == 1:
-            continue
+        log = dict(row)
 
-        minutes, amount = calculate_amount_by_time(row["entry_time"], row["exit_time"])
+        minutes, amount = calculate_amount_by_time(
+            log["entry_time"],
+            log["exit_time"]
+        )
 
-        db.execute(
-            """
+        log["live_minutes"] = minutes
+        log["live_amount"] = amount
+
+        # базаға update
+        db.execute("""
             UPDATE vehicle_logs
             SET duration_minutes = ?,
                 amount = ?
             WHERE id = ?
-            """,
-            (minutes, amount, row["id"]),
-        )
+        """, (
+            minutes,
+            amount,
+            log["id"]
+        ))
+
+        updated_logs.append(log)
 
     db.commit()
-
-    logs = db.execute("SELECT * FROM vehicle_logs ORDER BY id DESC").fetchall()
     db.close()
 
-    return render_template("journal.html", logs=logs)
+    return render_template(
+        "journal.html",
+        logs=updated_logs
+    )
 
 
 @app.route("/events")
@@ -1389,6 +1470,27 @@ def client_status():
         "messages": messages,
     })
 
+@app.route("/api/remote-entry", methods=["POST"])
+def remote_entry():
+    secret = request.form.get("secret", "")
+
+    if secret != "auezov-secret-2026":
+        return jsonify({"ok": False, "message": "Құпия кілт қате"}), 403
+
+    plate = normalize_plate(request.form.get("plate", ""))
+    direction = request.form.get("direction", "entry")
+
+    if not plate:
+        return jsonify({"ok": False, "message": "Номер жоқ"})
+
+    if direction == "entry":
+        add_entry(plate, "Remote camera", None)
+    elif direction == "exit":
+        add_exit(plate, "Remote camera", None)
+    else:
+        return jsonify({"ok": False, "message": "direction қате"})
+
+    return jsonify({"ok": True, "plate": plate})
 
 if __name__ == "__main__":
     init_db()
