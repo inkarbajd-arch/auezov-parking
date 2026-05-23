@@ -701,6 +701,34 @@ def generate_frames(camera_name, remote=False):
 def index():
     return redirect(url_for("login"))
 
+@app.route("/admin/clear-all")
+def clear_all_online():
+    try:
+        conn = sqlite3.connect("parking.db")
+        cur = conn.cursor()
+
+        tables = [
+            "vehicle_logs",
+            "events",
+            "audit_logs"
+        ]
+
+        for table in tables:
+            try:
+                cur.execute(f"DELETE FROM {table}")
+                cur.execute(
+                    f"DELETE FROM sqlite_sequence WHERE name='{table}'"
+                )
+            except:
+                pass
+
+        conn.commit()
+        conn.close()
+
+        return "✅ ONLINE DATABASE CLEARED"
+
+    except Exception as e:
+        return f"❌ ERROR: {e}"
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
