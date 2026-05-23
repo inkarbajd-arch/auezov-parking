@@ -1,90 +1,113 @@
-{% extends "base.html" %} {% block title %}QR Төлем{% endblock %} {% block
-content %}
-<div class="page-header">
-  <div>
-    <h1>QR Төлем</h1>
-    <p>Клиенттерге арналған QR сілтемелер</p>
-  </div>
-</div>
+<!doctype html>
+<html lang="kk">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>QR Төлем</title>
 
-<div class="qr-panel">
-  <h2>Auezov Parking QR</h2>
+    <link rel="stylesheet" href="/static/style.css" />
 
-  <div class="qr-grid">
-    <div class="qr-card">
-      <h3>Системаға кіру</h3>
-      <img
-        src="https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=https://auezovparking.xyz/login"
-        alt="Login QR"
-      />
-      <p>Логин / пароль арқылы жүйеге кіру</p>
+    <style>
+      .qr-panel {
+        max-width: 920px;
+        margin: 40px auto;
+        padding: 34px;
+        border-radius: 28px;
+        background: rgba(15, 23, 42, 0.92);
+        border: 1px solid rgba(56, 189, 248, 0.22);
+        box-shadow: 0 0 60px rgba(56, 189, 248, 0.18);
+        text-align: center;
+      }
+
+      .qr-panel h2 {
+        margin: 0 0 28px;
+        font-size: 34px;
+        color: white;
+      }
+
+      .qr-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(260px, 1fr));
+        gap: 28px;
+      }
+
+      .qr-card {
+        padding: 26px;
+        border-radius: 24px;
+        background: rgba(2, 6, 23, 0.75);
+        border: 1px solid rgba(56, 189, 248, 0.18);
+      }
+
+      .qr-card h3 {
+        color: white;
+        margin-bottom: 18px;
+      }
+
+      .qr-card img {
+        width: 260px;
+        max-width: 100%;
+        border-radius: 18px;
+        background: white;
+        padding: 12px;
+      }
+
+      .qr-card p {
+        color: #bfdbfe;
+        font-weight: 800;
+        margin-top: 18px;
+      }
+
+      @media (max-width: 760px) {
+        .qr-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="logo">Auezov Parking</div>
+
+        <nav>
+          <a href="/dashboard">АРМ</a>
+          <a href="/journal">Журнал</a>
+          <a href="/events">События</a>
+          <a href="/payments">Платежи / Баланс</a>
+          <a href="/qr">QR Төлем</a>
+        </nav>
+      </aside>
+
+      <main class="main-content">
+        <div class="qr-panel">
+          <h2>Auezov Parking QR</h2>
+
+          <div class="qr-grid">
+            <div class="qr-card">
+              <h3>Системаға кіру</h3>
+
+              <img
+                src="https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=https://auezovparking.xyz/login"
+                alt="Login QR"
+              />
+
+              <p>Логин / пароль арқылы жүйеге кіру</p>
+            </div>
+
+            <div class="qr-card">
+              <h3>QR Төлем</h3>
+
+              <img
+                src="https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=https://auezovparking.xyz/pay"
+                alt="Payment QR"
+              />
+
+              <p>Клиент номер жазып төлем жасайды</p>
+            </div>
+          </div>
+        </div>
+      </main>
     </div>
-
-    <div class="qr-card">
-      <h3>QR Төлем</h3>
-      <img
-        src="https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=https://auezovparking.xyz/pay"
-        alt="Payment QR"
-      />
-      <p>Клиент номер жазып төлем жасайды</p>
-    </div>
-  </div>
-</div>
-
-<style>
-  .qr-panel {
-    max-width: 920px;
-    margin: 40px auto;
-    padding: 34px;
-    border-radius: 28px;
-    background: rgba(15, 23, 42, 0.92);
-    border: 1px solid rgba(56, 189, 248, 0.22);
-    box-shadow: 0 0 60px rgba(56, 189, 248, 0.18);
-    text-align: center;
-  }
-
-  .qr-panel h2 {
-    margin: 0 0 28px;
-    font-size: 34px;
-    color: white;
-  }
-
-  .qr-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(260px, 1fr));
-    gap: 28px;
-  }
-
-  .qr-card {
-    padding: 26px;
-    border-radius: 24px;
-    background: rgba(2, 6, 23, 0.75);
-    border: 1px solid rgba(56, 189, 248, 0.18);
-  }
-
-  .qr-card h3 {
-    color: white;
-    margin-bottom: 18px;
-  }
-
-  .qr-card img {
-    width: 260px;
-    max-width: 100%;
-    border-radius: 18px;
-    background: white;
-    padding: 12px;
-  }
-
-  .qr-card p {
-    color: #bfdbfe;
-    font-weight: 800;
-    margin-top: 18px;
-  }
-
-  @media (max-width: 760px) {
-    .qr-grid {
-      grid-template-columns: 1fr;
-    }
-  }
-</style>
-{% endblock %}
+  </body>
+</html>
