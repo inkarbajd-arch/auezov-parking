@@ -2434,14 +2434,8 @@ def upload_capture():
     if not image or not image.filename:
         return jsonify({"ok": False, "message": "Файл аты жоқ"}), 400
 
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
-    filename = f"cloud_{camera_name}_{plate}_{int(time.time())}.jpg"
-    save_path = UPLOAD_DIR / filename
-
-    image.save(str(save_path))
-
-    image_url = f"/static/captures/{filename}"
+    image_bytes = image.read()
+    image_mime = image.mimetype or "image/jpeg"
 
     db = get_db()
 
@@ -2456,15 +2450,23 @@ def upload_capture():
         (plate,),
     ).fetchone()
 
-    if latest_event:
-        db.execute(
-            """
-            UPDATE events
-            SET image_path = ?
-            WHERE id = ?
-            """,
-            (image_url, latest_event["id"]),
-        )
+    if not latest_event:
+        db.close()
+        return jsonify({"ok": False, "message": "Event табылмады"}), 404
+
+    event_id = latest_event["id"]
+    image_url = f"/event-image/{event_id}"
+
+    db.execute(
+        """
+        UPDATE events
+        SET image_path = ?,
+            image_data = ?,
+            image_mime = ?
+        WHERE id = ?
+        """,
+        (image_url, image_bytes, image_mime, event_id),
+    )
 
     if camera_name == "entry":
         db.execute(
@@ -2507,6 +2509,34 @@ def upload_capture():
             "image_url": image_url,
         }
     )
+
+
+@app.route("/event-image/<int:event_id>")
+def event_image(event_id):
+    db = get_db()
+
+    row = db.execute(
+        """
+        SELECT image_data, image_mime
+        FROM events
+        WHERE id = ?
+        """,
+        (event_id,),
+    ).fetchone()
+
+    db.close()
+
+    if not row or not row["image_data"]:
+        return "", 404
+
+    image_data = row["image_data"]
+
+    if isinstance(image_data, memoryview):
+        image_data = image_data.tobytes()
+
+    image_mime = row["image_mime"] or "image/jpeg"
+
+    return Response(image_data, mimetype=image_mime)
 
 # ============================================================
 # ADMIN / HEALTH

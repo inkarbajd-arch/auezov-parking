@@ -125,6 +125,12 @@ def migrate_db(db):
 
     add_column_if_not_exists(db, "barriers", "updated_at", "TEXT")
 
+    if db.is_postgres:
+        add_column_if_not_exists(db, "events", "image_data", "BYTEA")
+    else:
+        add_column_if_not_exists(db, "events", "image_data", "BLOB")
+
+    add_column_if_not_exists(db, "events", "image_mime", "TEXT")
 
 def init_db():
     db = get_db()
