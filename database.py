@@ -1,7 +1,7 @@
 import os
 import math
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 import psycopg2
 import psycopg2.extras
@@ -84,8 +84,10 @@ def get_db():
     return DB()
 
 
+KZ_TZ = timezone(timedelta(hours=5))
+
 def now_str():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(KZ_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def column_exists(db, table_name, column_name):

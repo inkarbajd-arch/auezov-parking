@@ -4,7 +4,7 @@ import time
 import math
 import threading
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import cv2
 import numpy as np
@@ -135,6 +135,10 @@ worker_threads = {
     "exit": None,
 }
 
+alpr_busy = {
+    "entry": False,
+    "exit": False,
+}
 
 # ============================================================
 # CAMERA SETTINGS
@@ -166,8 +170,10 @@ def login_required():
     return session.get("logged_in") is True
 
 
+KZ_TZ = timezone(timedelta(hours=5))
+
 def now_str():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(KZ_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
 
 BAD_OCR_WORDS = (
@@ -273,7 +279,7 @@ def calculate_amount_by_time(entry_time, exit_time=None):
         if exit_time:
             exit_dt = datetime.strptime(exit_time, "%Y-%m-%d %H:%M:%S")
         else:
-            exit_dt = datetime.now()
+            exit_dt = datetime.now(KZ_TZ).replace(tzinfo=None)
 
         minutes = max(int((exit_dt - entry_dt).total_seconds() // 60), 0)
 
@@ -326,7 +332,7 @@ def encode_frame(frame, remote=False):
             quality = 55
         else:
             frame = cv2.resize(frame, (854, 480))
-            quality = 70
+            quality = 65
 
         ok, buffer = cv2.imencode(
             ".jpg",
@@ -601,9 +607,9 @@ def mark_last_log_free(plate, free_type):
 # ============================================================
 
 def configure_cap(cap):
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 854)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    cap.set(cv2.CAP_PROP_FPS, 20)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
+    cap.set(cv2.CAP_PROP_FPS, 25)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     return cap
 
@@ -621,7 +627,7 @@ def test_capture(cap, attempts=8):
 
 def open_laptop_camera():
     for index in LAPTOP_CAMERA_INDEXES:
-        for backend in [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]:
+        for backend in [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY]:
             try:
                 print(f"🔎 Ноутбук камера: index={index}, backend={backend}")
 
@@ -639,11 +645,10 @@ def open_laptop_camera():
 
     return None
 
-
 def open_droidcam():
-    # 1) Алдымен Windows камера index арқылы іздейміз
+    # 1) Алдымен DroidCam virtual camera index арқылы іздейміз
     for index in DROIDCAM_INDEXES:
-        for backend in [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]:
+        for backend in [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY]:
             try:
                 print(f"🔎 DroidCam index: {index}, backend={backend}")
 
@@ -659,7 +664,7 @@ def open_droidcam():
             except Exception as e:
                 print("❌ DroidCam index қатесі:", e)
 
-    # 2) Егер index табылмаса, IP URL арқылы қосыламыз
+    # 2) Егер index арқылы табылмаса, URL арқылы іздейміз
     for url in DROIDCAM_URLS:
         for backend in [cv2.CAP_FFMPEG, cv2.CAP_ANY]:
             try:
@@ -687,7 +692,10 @@ def open_camera(camera_name):
     if camera_name == "entry":
         return open_laptop_camera()
 
-    return open_droidcam()
+    if camera_name == "exit":
+        return open_droidcam()
+
+    return None
 
 
 # ============================================================
@@ -861,6 +869,23 @@ def process_alpr_interval(camera_name, frame):
         plate_confirm[camera_name]["time"] = 0
 
 
+def run_alpr_async(camera_name, frame):
+    """
+    ALPR-ды бөлек thread ішінде жүргіземіз.
+    Сол кезде камера видеосы тоқтап қалмайды.
+    """
+    if alpr_busy[camera_name]:
+        return
+
+    def job():
+        alpr_busy[camera_name] = True
+        try:
+            process_alpr_interval(camera_name, frame)
+        finally:
+            alpr_busy[camera_name] = False
+
+    threading.Thread(target=job, daemon=True).start()
+
 # ============================================================
 # CAMERA WORKER
 # ============================================================
@@ -895,8 +920,14 @@ def camera_worker(camera_name):
 
                     time.sleep(1.5)
                     continue
+                
+            for _ in range(2):
+                cap.grab()
 
-            ok, frame = cap.read()
+            ok, frame = cap.retrieve()
+
+            if not ok or frame is None or frame.size == 0:
+                ok, frame = cap.read()
 
             if not ok or frame is None or frame.size == 0:
                 print(f"⚠️ {camera_name} кадр бермеді, reconnect...")
@@ -938,9 +969,9 @@ def camera_worker(camera_name):
             now = time.time()
             if now - last_alpr_time >= 1.0:
                 last_alpr_time = now
-                process_alpr_interval(camera_name, frame.copy())
+                run_alpr_async(camera_name, frame.copy())
 
-            time.sleep(0.02)
+            time.sleep(0.005)
 
         except Exception as e:
             print(f"❌ camera_worker {camera_name} қатесі:", e)
@@ -1007,7 +1038,7 @@ def generate_frames(camera_name, remote=False):
         if remote:
             time.sleep(0.18)
         else:
-            time.sleep(0.04)
+            time.sleep(0.02)
             
 # ============================================================
 # PAGE ROUTES
