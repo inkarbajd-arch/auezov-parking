@@ -6,6 +6,7 @@
     <title>Администрация | Auezov Parking</title>
     <link rel="stylesheet" href="/static/style.css" />
   </head>
+
   <body>
     <div class="app-shell">
       <aside class="sidebar">
@@ -19,18 +20,18 @@
           </div>
         </div>
 
-      <nav class="nav">
-  <a class="nav-link" href="/dashboard">АРМ</a>
-<a class="nav-link" href="/journal">Журнал</a>
-<a class="nav-link" href="/events">События</a>
-<a class="nav-link" href="/audit">Аудит</a>
-<a class="nav-link" href="/abonement">Абонемент</a>
-<a class="nav-link" href="/administration">Администрация</a>
-<a class="nav-link" href="/payments">Платежи / Баланс</a>
-<a class="nav-link" href="/qr">QR Төлем</a>
-<a class="nav-link" href="/client">Клиент статус</a>
-<a class="nav-link logout" href="/logout">Шығу</a>
-</nav>
+        <nav class="nav">
+          <a class="nav-link" href="/dashboard">АРМ</a>
+          <a class="nav-link" href="/journal">Журнал</a>
+          <a class="nav-link" href="/events">События</a>
+          <a class="nav-link" href="/audit">Аудит</a>
+          <a class="nav-link" href="/abonement">Абонемент</a>
+          <a class="nav-link" href="/administration">Администрация</a>
+          <a class="nav-link" href="/payments">Платежи / Баланс</a>
+          <a class="nav-link" href="/qr">QR Төлем</a>
+          <a class="nav-link" href="/client">Клиент статус</a>
+          <a class="nav-link logout" href="/logout">Шығу</a>
+        </nav>
       </aside>
 
       <main class="main-content">
@@ -49,6 +50,7 @@
             <input id="adminFullName" placeholder="Аты-жөні" />
             <input id="adminPhone" placeholder="Телефон номері" />
             <input id="adminPlate" placeholder="Машина номері: 919DAU13" />
+
             <input
               id="adminPosition"
               placeholder="Лауазымы: физика мұғалімі, декан, ректор..."
@@ -93,6 +95,7 @@
                 <th>Әрекет</th>
               </tr>
             </thead>
+
             <tbody>
               {% for s in staff %}
               <tr>
@@ -101,6 +104,7 @@
                 <td>{{ s.full_name }}</td>
                 <td>{{ s.phone }}</td>
                 <td>{{ s.position }}</td>
+
                 <td>
                   {% if s.active %}
                   <span class="mini success-text">ACTIVE</span>
@@ -108,7 +112,9 @@
                   <span class="mini danger-text">OFF</span>
                   {% endif %}
                 </td>
+
                 <td>{{ s.created_at }}</td>
+
                 <td>
                   <button
                     class="btn danger mini-btn"
@@ -125,59 +131,6 @@
       </main>
     </div>
 
-    <script>
-        function normalizePlate(value) {
-          return String(value || "")
-            .toUpperCase()
-            .replace(/\s+/g, "")
-            .replace(/-/g, "")
-            .replace(/_/g, "");
-        }
-
-        function postForm(url, data) {
-          const fd = new FormData();
-          Object.keys(data).forEach((key) => fd.append(key, data[key]));
-          return fetch(url, { method: "POST", body: fd }).then((r) => r.json());
-        }
-
-        function addAdministration() {
-          const fullName = document.getElementById("adminFullName").value.trim();
-          const phone = document.getElementById("adminPhone").value.trim();
-          const plate = normalizePlate(
-            document.getElementById("adminPlate").value,
-          );
-          const position = document.getElementById("adminPosition").value.trim();
-
-          if (!fullName || !phone || !plate || !position) {
-            alert("Барлық мәліметті толтырыңыз");
-            return;
-          }
-
-          postForm("/api/administration", {
-            full_name: fullName,
-            phone: phone,
-            plate: plate,
-            position: position,
-          }).then((data) => {
-            alert(data.ok ? "Қызметкер тіркелді" : data.message);
-            if (data.ok) location.reload();
-          });
-        }
-
-        function disableAccess(table, plate) {
-          if (!confirm(plate + " рұқсатын өшіреміз бе?")) return;
-
-          postForm("/api/free-access/delete", {
-            table: table,
-            plate: plate,
-          }).then((data) => {
-            alert(data.ok ? "Рұқсат өшірілді" : "Қате шықты");
-            if (data.ok) location.reload();
-          });
-        }
-
-        </script>
-      <script src="/static/app.js">
-    
+    <script src="/static/app.js"></script>
   </body>
 </html>

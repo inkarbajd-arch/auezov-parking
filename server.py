@@ -1,71 +1,117 @@
-import math
 import os
 import re
 import time
-import requests
+import math
+import threading
 from pathlib import Path
 from datetime import datetime, timedelta
 
 import cv2
 import numpy as np
-from flask import Flask, Response, jsonify, redirect, render_template, request, session, url_for
+import requests
+from dotenv import load_dotenv
+from flask import (
+    Flask,
+    Response,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
+)
 
-from database import add_audit, add_entry, add_exit, add_event, get_db, init_db
+from database import (
+    add_audit,
+    add_entry,
+    add_exit,
+    add_event,
+    get_db,
+    init_db,
+)
 
+load_dotenv()
 
-try:
-    from fast_alpr import ALPR
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+IS_RENDER = os.getenv("RENDER", "").lower() == "true"
 
-    alpr = ALPR(
-        detector_model="yolo-v9-t-384-license-plate-end2end",
-        ocr_model="cct-xs-v2-global-model",
-    )
-    print("✅ GLOBAL ALPR іске қосылды")
-except Exception as e:
-    alpr = None
-    print("❌ ALPR жүктелмеді:", e)
+# Render-де камера ашылмайды. Камера тек локал компьютерде жұмыс істейді.
+# Егер керек болса .env ішіне ENABLE_CAMERA=1 деп қоясың.
+ENABLE_CAMERA = os.getenv("ENABLE_CAMERA", "1").strip() == "1"
+ENABLE_RENDER_SYNC = os.getenv("ENABLE_RENDER_SYNC", "0").strip() == "1"
+
+BASE_DIR = Path(__file__).resolve().parent
+UPLOAD_DIR = BASE_DIR / "static" / "captures"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
-app.secret_key = "auezov-parking-secret-key"
+app.secret_key = os.getenv("SECRET_KEY", "auezov-parking-secret-key")
+
+
+# ============================================================
+# DATABASE INIT
+# ============================================================
 
 try:
     init_db()
-    print("✅ Render database initialized")
+    print("✅ Database initialized")
+    print("✅ DB mode:", "PostgreSQL" if DATABASE_URL else "SQLite fallback")
 except Exception as e:
     print("❌ Database init error:", e)
 
-UPLOAD_DIR = "static/captures"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# ============================================================
+# ALPR INIT
+# ============================================================
+
+alpr = None
+
+if ENABLE_CAMERA and not IS_RENDER:
+    try:
+        from fast_alpr import ALPR
+
+        alpr = ALPR(
+            detector_model="yolo-v9-t-384-license-plate-end2end",
+            detector_conf_thresh=0.15,
+            ocr_model="cct-xs-v2-global-model",
+            ocr_device="cpu",
+        )
+        print("✅ GLOBAL ALPR іске қосылды")
+    except Exception as e:
+        alpr = None
+        print("❌ ALPR жүктелмеді:", e)
+else:
+    print("ℹ️ Render немесе камера өшірулі: ALPR жүктелмейді")
+
+
+# ============================================================
+# GLOBAL STATE
+# ============================================================
 
 barriers = {
-    "cam1": {"fixed_open": False, "fixed_close": False, "state": "closed"},
-    "cam2": {"fixed_open": False, "fixed_close": False, "state": "closed"},
+    "entry": {"fixed_open": False, "fixed_close": False, "state": "closed"},
+    "exit": {"fixed_open": False, "fixed_close": False, "state": "closed"},
 }
 
 state = {
-    "cam1_plate": "---",
-    "cam2_plate": "---",
+    "entry_plate": "---",
+    "exit_plate": "---",
+    "entry_frame": None,
+    "exit_frame": None,
+    "entry_connected": False,
+    "exit_connected": False,
+    "entry_message": "Камера күтілуде",
+    "exit_message": "Камера күтілуде",
 }
 
-LAPTOP_CAMERA_INDEXES = [0]
-DROIDCAM_INDEXES = [1, 2, 3, 4, 5]
+state_lock = threading.Lock()
 
-DROIDCAM_URLS = [
-    "http://10.84.229.42:4747/video",
-    "http://10.84.229.42:4747/mjpegfeed",
-    "http://10.84.229.42:4747/videofeed",
-    "http://10.180.112.227:4747/video",
-    "http://10.180.112.227:4747/mjpegfeed",
-    "http://10.180.112.227:4747/videofeed",
-    "http://10.7.253.217:4747/video",
-    "http://10.7.253.217:4747/mjpegfeed",
-    "http://10.7.253.217:4747/videofeed",
-]
+last_saved_plate = {
+    "entry": "",
+    "exit": "",
+}
 
-entry_cap = None
-exit_cap = None
-
-last_detect_time = {
+last_saved_time = {
     "entry": 0,
     "exit": 0,
 }
@@ -75,49 +121,143 @@ plate_confirm = {
     "exit": {"last": "", "count": 0},
 }
 
+workers_started = {
+    "entry": False,
+    "exit": False,
+}
+
+worker_threads = {
+    "entry": None,
+    "exit": None,
+}
+
+
+# ============================================================
+# CAMERA SETTINGS
+# ============================================================
+
+LAPTOP_CAMERA_INDEXES = [0]
+DROIDCAM_INDEXES = [1, 2, 3, 4, 5]
+
+DROIDCAM_URLS = [
+    "http://10.84.229.42:4747/video",
+    "http://10.84.229.42:4747/mjpegfeed",
+    "http://10.84.229.42:4747/videofeed",
+
+    "http://10.180.112.227:4747/video",
+    "http://10.180.112.227:4747/mjpegfeed",
+    "http://10.180.112.227:4747/videofeed",
+
+    "http://10.7.253.217:4747/video",
+    "http://10.7.253.217:4747/mjpegfeed",
+    "http://10.7.253.217:4747/videofeed",
+]
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
 def login_required():
     return session.get("logged_in") is True
 
 
-def normalize_plate(text):
-    if not text:
-        return ""
+def now_str():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    text = str(text).upper()
+
+BAD_OCR_WORDS = (
+    "PLATE",
+    "PREDICTION",
+    "CHAR",
+    "PROB",
+    "PROBS",
+    "NONE",
+    "REGION",
+    "LICENSE",
+    "TEXT",
+    "SCORE",
+    "CANADA",
+    "VIETNAM",
+    "KINGDOM",
+    "LATVIA",
+    "NORWAY",
+    "AUEZOV",
+    "PARKING",
+)
+
+
+def normalize_plate(text):
+    """
+    OCR-дан келген мәтінді номер форматына келтіреді.
+    Кирилл әріптерін латынға ауыстырады.
+    """
+    text = str(text or "").upper()
+
+    replace_map = {
+        "А": "A",
+        "В": "B",
+        "Е": "E",
+        "К": "K",
+        "М": "M",
+        "Н": "H",
+        "О": "O",
+        "Р": "P",
+        "С": "C",
+        "Т": "T",
+        "У": "Y",
+        "Х": "X",
+    }
+
+    for old, new in replace_map.items():
+        text = text.replace(old, new)
+
     text = text.replace(" ", "")
     text = text.replace("-", "")
-    text = text.replace(".", "")
     text = text.replace("_", "")
+    text = text.replace(".", "")
 
     text = re.sub(r"[^A-Z0-9]", "", text)
 
-    bad_words = [
-        "PLATE", "PREDICTION", "CHAR", "PROBS", "PROB",
-        "REGION", "UNKNOWN", "NONE", "FRANCE",
-        "CANADA", "VIETNAM", "LATVIA", "NORWAY",
-        "KINGDOM", "DKINGDOM"
+    for bad in BAD_OCR_WORDS:
+        text = text.replace(bad, "")
+
+    patterns = [
+        r"\d{3}[A-Z]{3}\d{2}",            # Қазақстан: 858SKA02
+        r"\d{3}[A-Z]{2,3}\d{2}",          # Қазақстан OCR вариация
+        r"[A-Z]\d{3}[A-Z]{2}\d{2,3}",     # Ресей: A222MP77
+        r"[A-Z][0-9]{3}[A-Z]{3}",         # A222MPY
+        r"[A-Z]{2}\d{4}[A-Z]{2}",         # KA0132CO
+        r"[A-Z]{1,3}\d{3,5}",             # BT4732
+        r"\d{3}[A-Z]\d{3,4}",             # 147D0647
+        r"[A-Z]{1,3}\d{2,4}[A-Z]{1,3}",   # mixed
     ]
 
-    for word in bad_words:
-        text = text.replace(word, "")
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(0)
 
-    if len(text) < 4 or len(text) > 12:
-        return ""
-
-    if text.count("0") >= 7:
-        return ""
-
-    has_digit = any(ch.isdigit() for ch in text)
-    has_alpha = any(ch.isalpha() for ch in text)
-
-    if not has_digit or not has_alpha:
-        return ""
-
-    return text
+    return ""
 
 
-from datetime import datetime
-import math
+def is_good_plate(plate):
+    plate = normalize_plate(plate)
+
+    if len(plate) < 5 or len(plate) > 10:
+        return False
+
+    if any(word in plate for word in BAD_OCR_WORDS):
+        return False
+
+    if not any(ch.isdigit() for ch in plate):
+        return False
+
+    if not any(ch.isalpha() for ch in plate):
+        return False
+
+    return True
+
 
 def calculate_amount_by_time(entry_time, exit_time=None):
     try:
@@ -131,18 +271,14 @@ def calculate_amount_by_time(entry_time, exit_time=None):
         else:
             exit_dt = datetime.now()
 
-        minutes = int((exit_dt - entry_dt).total_seconds() / 60)
+        minutes = max(int((exit_dt - entry_dt).total_seconds() // 60), 0)
 
-        if minutes < 0:
-            minutes = 0
-
-        # Алғашқы 2 сағат = 200 тг
         if minutes <= 120:
             amount = 200
         else:
             extra_minutes = minutes - 120
             extra_hours = math.ceil(extra_minutes / 60)
-            amount = 200 + (extra_hours * 100)
+            amount = 200 + extra_hours * 100
 
         return minutes, amount
 
@@ -151,186 +287,174 @@ def calculate_amount_by_time(entry_time, exit_time=None):
         return 0, 0
 
 
+def cleanup_old_captures(limit=200):
+    try:
+        files = sorted(
+            UPLOAD_DIR.glob("*.jpg"),
+            key=lambda x: x.stat().st_mtime,
+            reverse=True,
+        )
+
+        for old_file in files[limit:]:
+            try:
+                old_file.unlink()
+            except Exception:
+                pass
+
+    except Exception as e:
+        print("⚠️ cleanup_old_captures қатесі:", e)
+
+
+def save_frame(frame, camera_name):
+    filename = f"{camera_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+    path = UPLOAD_DIR / filename
+
+    cv2.imwrite(str(path), frame)
+    cleanup_old_captures(200)
+
+    return f"/static/captures/{filename}"
+
+
 def encode_frame(frame, remote=False):
-    if remote:
-        frame = cv2.resize(frame, (640, 360))
-        quality = 55
-    else:
-        frame = cv2.resize(frame, (1280, 720))
-        quality = 85
+    try:
+        if remote:
+            frame = cv2.resize(frame, (640, 360))
+            quality = 55
+        else:
+            frame = cv2.resize(frame, (854, 480))
+            quality = 70
 
-    ok, buffer = cv2.imencode(
-        ".jpg",
-        frame,
-        [int(cv2.IMWRITE_JPEG_QUALITY), quality]
-    )
+        ok, buffer = cv2.imencode(
+            ".jpg",
+            frame,
+            [int(cv2.IMWRITE_JPEG_QUALITY), quality],
+        )
 
-    if not ok:
+        if not ok:
+            return b""
+
+        return (
+            b"--frame\r\n"
+            b"Content-Type: image/jpeg\r\n\r\n"
+            + buffer.tobytes()
+            + b"\r\n"
+        )
+
+    except Exception as e:
+        print("❌ encode_frame қатесі:", e)
         return b""
-
-    return (
-        b"--frame\r\n"
-        b"Content-Type: image/jpeg\r\n\r\n" +
-        buffer.tobytes() +
-        b"\r\n"
-    )
 
 
 def no_signal_frame(text):
     frame = np.zeros((480, 800, 3), dtype=np.uint8)
     frame[:] = (10, 15, 30)
 
-    cv2.putText(frame, "Auezov Parking", (40, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)
-    cv2.putText(frame, text, (40, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (255, 255, 255), 2)
-    cv2.putText(frame, "Camera / DroidCam IP tekseriniz", (40, 250), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (180, 220, 255), 2)
+    cv2.putText(
+        frame,
+        "Auezov Parking",
+        (40, 80),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.2,
+        (0, 255, 255),
+        3,
+    )
+
+    cv2.putText(
+        frame,
+        text,
+        (40, 190),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.85,
+        (255, 255, 255),
+        2,
+    )
+
+    cv2.putText(
+        frame,
+        "Camera / DroidCam IP tekseriniz",
+        (40, 250),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (180, 220, 255),
+        2,
+    )
 
     return frame
 
 
-def configure_cap(cap):
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    return cap
+def draw_overlay(frame, camera_name, plate):
+    label = "ENTRY" if camera_name == "entry" else "EXIT"
 
+    cv2.rectangle(frame, (0, 0), (frame.shape[1], 62), (0, 0, 0), -1)
 
-def test_capture(cap, attempts=8):
-    for _ in range(attempts):
-        ok, frame = cap.read()
+    cv2.putText(
+        frame,
+        f"Auezov Parking | {label} | {plate}",
+        (20, 40),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.9,
+        (70, 255, 20),
+        2,
+    )
 
-        if ok and frame is not None and frame.size > 0:
-            return True
-
-        time.sleep(0.25)
-
-    return False
-
-
-def open_laptop_camera():
-    for index in LAPTOP_CAMERA_INDEXES:
-        for backend in [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY]:
-            try:
-                print(f"🔎 Ноутбук камера: index={index}, backend={backend}")
-                cap = cv2.VideoCapture(index, backend)
-                configure_cap(cap)
-
-                if cap.isOpened() and test_capture(cap):
-                    print(f"✅ Ноутбук камера қосылды: index={index}, backend={backend}")
-                    return cap
-
-                cap.release()
-            except Exception as e:
-                print("❌ Ноутбук камера қатесі:", e)
-
-    return None
-
-
-def open_droidcam():
-    for index in DROIDCAM_INDEXES:
-        for backend in [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY]:
-            try:
-                print(f"🔎 DroidCam index: {index}, backend={backend}")
-                cap = cv2.VideoCapture(index, backend)
-                configure_cap(cap)
-
-                if cap.isOpened() and test_capture(cap):
-                    print(f"✅ DroidCam index арқылы қосылды: {index}")
-                    return cap
-
-                cap.release()
-            except Exception as e:
-                print("❌ DroidCam index қатесі:", e)
-
-    for url in DROIDCAM_URLS:
-        for backend in [cv2.CAP_FFMPEG, cv2.CAP_ANY]:
-            try:
-                print(f"🔎 DroidCam URL: {url}, backend={backend}")
-                cap = cv2.VideoCapture(url, backend)
-                configure_cap(cap)
-
-                if test_capture(cap):
-                    print(f"✅ DroidCam URL арқылы қосылды: {url}")
-                    return cap
-
-                cap.release()
-            except Exception as e:
-                print("❌ DroidCam URL қатесі:", e)
-
-    return None
-
-RENDER_API = "https://auezovparking.xyz/api/sync-entry"
-
-
-RENDER_API = "https://auezovparking.xyz/api/remote-entry"
+    return frame
 
 
 def send_to_render(plate, camera, event_type, image_path=None):
+    """
+    Егер локал мен домен бір PostgreSQL базаға қосылып тұрса,
+    Render sync қажет емес. Сондықтан әдепкіде өшірулі.
+
+    Қосу керек болса .env ішінде:
+    ENABLE_RENDER_SYNC=1
+    """
+    enable_sync = os.getenv("ENABLE_RENDER_SYNC", "0").strip() == "1"
+
+    if not enable_sync:
+        return False
+
     try:
+        render_url = os.getenv(
+            "RENDER_REMOTE_URL",
+            "https://auezovparking.xyz/api/remote-entry",
+        )
+
         data = {
-            "secret": "auezov-secret-2026",
+            "secret": os.getenv("REMOTE_SECRET", "auezov-secret-2026"),
             "plate": plate,
             "direction": event_type,
             "camera": camera,
         }
 
         files = None
+        real_image_path = None
 
-        real_image_path = image_path
+        if image_path:
+            if image_path.startswith("/static/"):
+                real_image_path = BASE_DIR / image_path.lstrip("/")
+            else:
+                real_image_path = Path(image_path)
 
-        if image_path and image_path.startswith("/static/"):
-            real_image_path = image_path.lstrip("/")
-
-        if real_image_path and os.path.exists(real_image_path):
-            files = {
-                "image": open(real_image_path, "rb")
-            }
-        else:
-            print("⚠️ Сурет табылмады:", image_path, "=>", real_image_path)
+        if real_image_path and real_image_path.exists():
+            files = {"image": open(real_image_path, "rb")}
 
         response = requests.post(
-            "https://auezovparking.xyz/api/remote-entry",
+            render_url,
             data=data,
             files=files,
-            timeout=30,
+            timeout=4,
         )
 
         if files:
             files["image"].close()
 
-        print("☁️ Render status:", response.status_code)
-        print("☁️ Render response:", response.text)
+        print("☁️ Render sync:", response.status_code, response.text[:120])
 
         return response.status_code == 200
 
     except Exception as e:
         print("⚠️ Render sync қатесі:", e)
         return False
-
-
-def cleanup_old_captures(limit=100):
-    folder = Path("static/captures")
-
-    if not folder.exists():
-        return
-
-    files = sorted(
-        folder.glob("*.jpg"),
-        key=lambda x: x.stat().st_mtime,
-        reverse=True
-    )
-
-    for old_file in files[limit:]:
-        try:
-            old_file.unlink()
-        except:
-            pass
-
-def save_frame(frame, camera_name):
-    filename = f"{camera_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-    path = os.path.join(UPLOAD_DIR, filename)
-    cv2.imwrite(path, frame)
-    cleanup_old_captures(100)
-    return path.replace("\\", "/")
 
 
 def is_blacklisted(plate):
@@ -370,6 +494,16 @@ def has_free_access(plate):
         (plate,),
     ).fetchone()
 
+    white_list = db.execute(
+        """
+        SELECT *
+        FROM lists
+        WHERE plate = ?
+          AND type = 'white'
+        """,
+        (plate,),
+    ).fetchone()
+
     db.close()
 
     if admin:
@@ -378,11 +512,15 @@ def has_free_access(plate):
     if abonement:
         return True, "Абонемент"
 
+    if white_list:
+        return True, "Ақ список"
+
     return False, ""
 
 
 def mark_last_log_free(plate, free_type):
     db = get_db()
+
     db.execute(
         """
         UPDATE vehicle_logs
@@ -399,178 +537,191 @@ def mark_last_log_free(plate, free_type):
         """,
         (free_type, plate),
     )
+
     db.commit()
     db.close()
 
-import re
+    # ============================================================
+# CAMERA OPEN FUNCTIONS
+# ============================================================
 
-BAD_OCR_WORDS = (
-    "PLATE", "PREDICTION", "CHAR", "PROB", "PROBS", "NONE",
-    "REGION", "LICENSE", "TEXT", "SCORE"
-)
+def configure_cap(cap):
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 854)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FPS, 20)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    return cap
 
-def normalize_plate(text):
-    text = str(text or "").upper()
+def test_capture(cap, attempts=8):
+    for _ in range(attempts):
+        ok, frame = cap.read()
 
-    replace_map = {
-        "А": "A", "В": "B", "Е": "E", "К": "K", "М": "M",
-        "Н": "H", "О": "O", "Р": "P", "С": "C", "Т": "T",
-        "У": "Y", "Х": "X",
-    }
+        if ok and frame is not None and frame.size > 0:
+            return True
 
-    for old, new in replace_map.items():
-        text = text.replace(old, new)
+        time.sleep(0.2)
 
-    text = re.sub(r"[^A-Z0-9]", "", text)
-
-    for bad in BAD_OCR_WORDS:
-        text = text.replace(bad, "")
-
-    patterns = [
-        r"[A-Z][0-9]{3}[A-Z]{2}[0-9]{2}",    # A222MP77
-        r"[A-Z][0-9]{3}[A-Z]{3}",            # A222MPY
-        r"[A-Z]{2}[0-9]{4}[A-Z]{2}",         # KA0132CO
-        r"[0-9]{3}[A-Z]{3}[0-9]{2}",         # 001DAU13
-        r"[A-Z]{1,2}[0-9]{3,4}[A-Z]{1,2}",   # запасной формат
-    ]
-
-    for pattern in patterns:
-        match = re.search(pattern, text)
-        if match:
-            return match.group(0)
-
-    return ""
-
-def send_to_cloud(plate, direction, image_path=None):
-    try:
-        data = {
-            "secret": "auezov-secret-2026",
-            "plate": plate,
-            "direction": direction,
-        }
-
-        files = {}
-
-        if image_path and os.path.exists(image_path):
-            files["image"] = open(image_path, "rb")
-
-        response = requests.post(
-            "https://auezovparking.xyz/api/remote-entry",
-            data=data,
-            files=files,
-            timeout=10,
-        )
-
-        if "image" in files:
-            files["image"].close()
-
-        print("☁️ Cloud sync:", response.json())
-
-    except Exception as e:
-        print("⚠️ Cloud sync қатесі:", e)
-
-BAD_WORDS = [
-    "PROB",
-    "CANADA",
-    "VIETNAM",
-    "KINGDOM",
-    "LATVIA",
-    "NORWAY",
-    "AUEZOV",
-    "PARKING",
-]
+    return False
 
 
-def is_good_plate(plate):
-    plate = normalize_plate(plate)
+def open_laptop_camera():
+    for index in LAPTOP_CAMERA_INDEXES:
+        for backend in [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]:
+            try:
+                print(f"🔎 Ноутбук камера: index={index}, backend={backend}")
 
-    if len(plate) < 5 or len(plate) > 10:
-        return False
+                cap = cv2.VideoCapture(index, backend)
+                configure_cap(cap)
 
-    if any(word in plate for word in BAD_WORDS):
-        return False
+                if cap.isOpened() and test_capture(cap):
+                    print(f"✅ Ноутбук камера қосылды: index={index}, backend={backend}")
+                    return cap
 
-    if not any(c.isdigit() for c in plate):
-        return False
+                cap.release()
 
-    if not any(c.isalpha() for c in plate):
-        return False
+            except Exception as e:
+                print("❌ Ноутбук камера қатесі:", e)
 
-    patterns = [
-        r"\d{3}[A-Z]{3}\d{2}",          # KZ: 858SKA02
-        r"[A-Z]\d{3}[A-Z]{2}\d{2,3}",  # RU: A222MP77
-        r"[A-Z]{2}\d{4}[A-Z]{2}",      # UA: KA0132CO
-        r"[A-Z]{1,3}\d{3,5}",          # BT4732
-        r"\d{3}[A-Z]\d{3,4}",          # 147D0647
-        r"[A-Z]{1,3}\d{2,4}[A-Z]{1,3}",# mixed foreign
-    ]
-
-    return any(re.fullmatch(pattern, plate) for pattern in patterns)
+    return None
 
 
-def process_plate(frame, camera_name):
-    now = time.time()
+def open_droidcam():
+    # 1) Алдымен Windows камера index арқылы іздейміз
+    for index in DROIDCAM_INDEXES:
+        for backend in [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]:
+            try:
+                print(f"🔎 DroidCam index: {index}, backend={backend}")
 
-    if now - last_detect_time[camera_name] < 0.25:
-        return state["cam1_plate"] if camera_name == "entry" else state["cam2_plate"]
+                cap = cv2.VideoCapture(index, backend)
+                configure_cap(cap)
 
-    last_detect_time[camera_name] = now
+                if cap.isOpened() and test_capture(cap):
+                    print(f"✅ DroidCam index арқылы қосылды: {index}")
+                    return cap
 
-    if alpr is None:
-        return "---"
+                cap.release()
+
+            except Exception as e:
+                print("❌ DroidCam index қатесі:", e)
+
+    # 2) Егер index табылмаса, IP URL арқылы қосыламыз
+    for url in DROIDCAM_URLS:
+        for backend in [cv2.CAP_FFMPEG, cv2.CAP_ANY]:
+            try:
+                print(f"🔎 DroidCam URL: {url}, backend={backend}")
+
+                cap = cv2.VideoCapture(url, backend)
+                configure_cap(cap)
+
+                if cap.isOpened() and test_capture(cap):
+                    print(f"✅ DroidCam URL арқылы қосылды: {url}")
+                    return cap
+
+                cap.release()
+
+            except Exception as e:
+                print("❌ DroidCam URL қатесі:", e)
+
+    return None
+
+
+def open_camera(camera_name):
+    if not ENABLE_CAMERA or IS_RENDER:
+        return None
+
+    if camera_name == "entry":
+        return open_laptop_camera()
+
+    return open_droidcam()
+
+
+# ============================================================
+# ALPR PROCESSING
+# ============================================================
+
+def read_plate_from_frame(frame):
+    """
+    Тек соңғы кадрдан номер оқиды.
+    Бұл функция video stream ішінде емес, background worker ішінде шақырылады.
+    """
+    if alpr is None or frame is None:
+        return ""
 
     try:
         results = alpr.predict(frame)
-        plate = ""
+        best_plate = ""
 
         for item in results:
-            try:
-                if hasattr(item, "ocr") and item.ocr:
-                    raw_text = str(item.ocr.text or "")
-                    clean = normalize_plate(raw_text)
-
-                    if is_good_plate(clean):
-                        plate = clean
-                        print("OCR GOOD:", raw_text, "=>", plate)
-                        break
-                    else:
-                        print("OCR REJECT:", raw_text, "=>", clean)
-
-            except Exception:
+            if not hasattr(item, "ocr") or not item.ocr:
                 continue
 
-        if not is_good_plate(plate):
-            if camera_name == "entry":
-                state["cam1_plate"] = "---"
-            else:
-                state["cam2_plate"] = "---"
+            raw_text = str(item.ocr.text or "")
+            clean = normalize_plate(raw_text)
 
-            return "---"
+            if is_good_plate(clean):
+                best_plate = clean
+                print("✅ OCR GOOD:", raw_text, "=>", best_plate)
+                break
 
-        if plate == plate_confirm[camera_name]["last"]:
-            plate_confirm[camera_name]["count"] += 1
-        else:
-            plate_confirm[camera_name]["last"] = plate
-            plate_confirm[camera_name]["count"] = 1
+            print("⚠️ OCR REJECT:", raw_text, "=>", clean)
 
-        if plate_confirm[camera_name]["count"] < 2:
-            print(f"⏳ Растау: {plate} ({plate_confirm[camera_name]['count']}/2)")
-            return state["cam1_plate"] if camera_name == "entry" else state["cam2_plate"]
+        return best_plate
 
-        if camera_name == "entry":
-            state["cam1_plate"] = plate
-            camera_label = "Гл корпус кіріс"
-            event_type = "entry"
-        else:
-            state["cam2_plate"] = plate
-            camera_label = "Гл корпус шығыс"
-            event_type = "exit"
+    except Exception as e:
+        print("❌ ALPR оқу қатесі:", e)
+        return ""
 
-        image_path = save_frame(frame, camera_name)
-        print("💾 Сақталуда:", plate)
 
-        if is_blacklisted(plate):
-            add_event(plate, "Гл корпус", "blacklist", image_path)
+def save_detected_plate(plate, camera_name, frame):
+    """
+    Расталған номерді PostgreSQL базаға сақтайды.
+    """
+    if not is_good_plate(plate):
+        return
+
+    now = time.time()
+
+    # Бір номерді қайта-қайта сақтап тастамау үшін cooldown
+    if (
+        last_saved_plate[camera_name] == plate
+        and now - last_saved_time[camera_name] < 12
+    ):
+        return
+
+    last_saved_plate[camera_name] = plate
+    last_saved_time[camera_name] = now
+
+    if camera_name == "entry":
+        camera_label = "Гл корпус кіріс"
+        event_type = "entry"
+    else:
+        camera_label = "Гл корпус шығыс"
+        event_type = "exit"
+
+    image_path = save_frame(frame, camera_name)
+    print("💾 Сақталуда:", plate, camera_name)
+
+    if is_blacklisted(plate):
+        add_event(plate, "Гл корпус", "blacklist", image_path)
+
+        send_to_render(
+            plate,
+            camera_label,
+            event_type,
+            image_path,
+        )
+
+        print(f"⛔ BLACKLIST: {plate}")
+        return
+
+    free, free_type = has_free_access(plate)
+
+    if camera_name == "entry":
+        saved = add_entry(plate, camera_label, image_path)
+
+        if saved:
+            if free:
+                mark_last_log_free(plate, free_type)
 
             send_to_render(
                 plate,
@@ -579,204 +730,252 @@ def process_plate(frame, camera_name):
                 image_path,
             )
 
-            print(f"⛔ BLACKLIST: {plate}")
-
-            plate_confirm[camera_name]["last"] = ""
-            plate_confirm[camera_name]["count"] = 0
-
-            return plate
-
-        free, free_type = has_free_access(plate)
-
-        if camera_name == "entry":
-            saved = add_entry(plate, camera_label, image_path)
-
-            if saved:
-                send_to_render(
-                    plate,
-                    camera_label,
-                    event_type,
-                    image_path,
-                )
-
-                if free:
-                    mark_last_log_free(plate, free_type)
-
-                print(f"✅ ENTRY SAVED TO JOURNAL: {plate}")
-
-            else:
-                print(f"⚠️ ENTRY сақталмады (inside болуы мүмкін): {plate}")
+            print(f"✅ ENTRY SAVED: {plate}")
 
         else:
-            saved = add_exit(plate, camera_label, image_path)
+            print(f"⚠️ ENTRY сақталмады: {plate} already inside болуы мүмкін")
 
-            if saved:
-                send_to_render(
-                    plate,
-                    camera_label,
-                    event_type,
-                    image_path,
+    else:
+        saved = add_exit(plate, camera_label, image_path)
+
+        if saved:
+            if free:
+                mark_last_log_free(plate, free_type)
+
+            send_to_render(
+                plate,
+                camera_label,
+                event_type,
+                image_path,
+            )
+
+            print(f"✅ EXIT SAVED: {plate}")
+
+        else:
+            add_event(plate, camera_label, "exit_not_found", image_path)
+            print(f"⚠️ EXIT сақталмады: {plate} inside табылмады")
+
+
+def process_alpr_interval(camera_name, frame):
+    """
+    Номерді әр кадрда емес, worker ішінен белгілі интервалмен оқимыз.
+    """
+    plate = read_plate_from_frame(frame)
+
+    if not is_good_plate(plate):
+        with state_lock:
+            if camera_name == "entry":
+                state["entry_plate"] = "---"
+            else:
+                state["exit_plate"] = "---"
+        return
+
+    # Бір номер кемінде 2 рет қатар оқылса ғана сақтаймыз
+    if plate == plate_confirm[camera_name]["last"]:
+        plate_confirm[camera_name]["count"] += 1
+    else:
+        plate_confirm[camera_name]["last"] = plate
+        plate_confirm[camera_name]["count"] = 1
+
+    with state_lock:
+        if camera_name == "entry":
+            state["entry_plate"] = plate
+        else:
+            state["exit_plate"] = plate
+
+    if plate_confirm[camera_name]["count"] < 2:
+        print(
+            f"⏳ Растау: {plate} "
+            f"({plate_confirm[camera_name]['count']}/2)"
+        )
+        return
+
+    save_detected_plate(plate, camera_name, frame)
+
+    plate_confirm[camera_name]["last"] = ""
+    plate_confirm[camera_name]["count"] = 0
+
+
+# ============================================================
+# CAMERA WORKER
+# ============================================================
+
+def camera_worker(camera_name):
+    """
+    Камераны бөлек thread ішінде оқиды.
+    Браузерге берілетін соңғы кадрды state ішінде ұстайды.
+    ALPR әр 1.0 секундта ғана жұмыс істейді.
+    """
+    print(f"🎥 Camera worker started: {camera_name}")
+
+    cap = None
+    last_alpr_time = 0
+
+    while True:
+        try:
+            if cap is None or not cap.isOpened():
+                cap = open_camera(camera_name)
+
+                if cap is None:
+                    with state_lock:
+                        state[f"{camera_name}_connected"] = False
+                        state[f"{camera_name}_message"] = (
+                            "Laptop kamera kosylmady"
+                            if camera_name == "entry"
+                            else "DroidCam kosylmady"
+                        )
+                        state[f"{camera_name}_frame"] = no_signal_frame(
+                            state[f"{camera_name}_message"]
+                        )
+
+                    time.sleep(1.5)
+                    continue
+
+            ok, frame = cap.read()
+
+            if not ok or frame is None or frame.size == 0:
+                print(f"⚠️ {camera_name} кадр бермеді, reconnect...")
+
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+
+                cap = None
+
+                with state_lock:
+                    state[f"{camera_name}_connected"] = False
+                    state[f"{camera_name}_message"] = "Kamera kadr bermedi"
+                    state[f"{camera_name}_frame"] = no_signal_frame(
+                        "Kamera kadr bermedi"
+                    )
+
+                time.sleep(1)
+                continue
+
+            # Кадрды жеңілдету: stream үшін overlay саламыз
+            with state_lock:
+                current_plate = (
+                    state["entry_plate"]
+                    if camera_name == "entry"
+                    else state["exit_plate"]
                 )
 
-                if free:
-                    mark_last_log_free(plate, free_type)
+            display_frame = frame.copy()
+            display_frame = draw_overlay(display_frame, camera_name, current_plate)
 
-                print(f"✅ EXIT SAVED TO JOURNAL: {plate}")
+            with state_lock:
+                state[f"{camera_name}_connected"] = True
+                state[f"{camera_name}_message"] = "OK"
+                state[f"{camera_name}_frame"] = display_frame
 
-            else:
-                print(f"⚠️ EXIT сақталмады (inside табылмады): {plate}")
+            # ALPR әр 1 секундта ғана
+            now = time.time()
+            if now - last_alpr_time >= 2.0:
+                last_alpr_time = now
+                process_alpr_interval(camera_name, frame.copy())
 
-        plate_confirm[camera_name]["last"] = ""
-        plate_confirm[camera_name]["count"] = 0
+            time.sleep(0.02)
 
-        return plate
+        except Exception as e:
+            print(f"❌ camera_worker {camera_name} қатесі:", e)
 
-    except Exception as e:
-        print("❌ ALPR оқу қатесі:", e)
+            try:
+                if cap:
+                    cap.release()
+            except Exception:
+                pass
 
-        return (
-            state["cam1_plate"]
-            if camera_name == "entry"
-            else state["cam2_plate"]
-        )
+            cap = None
+            time.sleep(1)
 
 
-def draw_overlay(frame, camera_name, plate):
-    label = "ENTRY" if camera_name == "entry" else "EXIT"
+def start_camera_worker(camera_name):
+    if IS_RENDER:
+        return
 
-    cv2.rectangle(frame, (0, 0), (frame.shape[1], 58), (0, 0, 0), -1)
-    cv2.putText(
-        frame,
-        f"Auezov Parking | {label} | {plate}",
-        (20, 38),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.9,
-        (70, 255, 20),
-        2,
+    if not ENABLE_CAMERA:
+        return
+
+    if workers_started[camera_name]:
+        return
+
+    workers_started[camera_name] = True
+
+    thread = threading.Thread(
+        target=camera_worker,
+        args=(camera_name,),
+        daemon=True,
     )
 
-    return frame
+    worker_threads[camera_name] = thread
+    thread.start()
 
 
-def get_camera(camera_name):
-    global entry_cap, exit_cap
-
-    if camera_name == "entry":
-        if entry_cap is None or not entry_cap.isOpened():
-            entry_cap = open_laptop_camera()
-        return entry_cap
-
-    if exit_cap is None or not exit_cap.isOpened():
-        exit_cap = open_droidcam()
-
-    return exit_cap
-
-
-def reset_camera(camera_name):
-    global entry_cap, exit_cap
-
-    if camera_name == "entry":
-        if entry_cap:
-            entry_cap.release()
-
-        entry_cap = open_laptop_camera()
-        return entry_cap
-
-    if exit_cap:
-        exit_cap.release()
-
-    exit_cap = open_droidcam()
-    return exit_cap
+def start_all_camera_workers():
+    start_camera_worker("entry")
+    start_camera_worker("exit")
 
 
 def generate_frames(camera_name, remote=False):
+    """
+    Бұл функция енді камераны өзі ашпайды.
+    Тек background worker дайындаған соңғы кадрды береді.
+    Сондықтан браузердегі видео қатпайды.
+    """
+    if camera_name not in ["entry", "exit"]:
+        return
+
+    if not IS_RENDER:
+        start_camera_worker(camera_name)
+
     while True:
-        cap = get_camera(camera_name)
+        with state_lock:
+            frame = state.get(f"{camera_name}_frame")
+            message = state.get(f"{camera_name}_message", "Камера күтілуде")
 
-        if cap is None:
-            text = "Laptop kamera kosylmady" if camera_name == "entry" else "DroidCam kosylmady"
-            yield encode_frame(no_signal_frame(text), remote=remote)
-            time.sleep(1)
-            continue
-
-        ok, frame = cap.read()
-
-        if not ok or frame is None or frame.size == 0:
-            reset_camera(camera_name)
-            yield encode_frame(no_signal_frame("Kamera kadr bermedi"), remote=remote)
-            time.sleep(1)
-            continue
-
-        plate = process_plate(frame, camera_name)
-        frame = draw_overlay(frame, camera_name, plate)
+        if frame is None:
+            frame = no_signal_frame(message)
 
         yield encode_frame(frame, remote=remote)
 
         if remote:
-            time.sleep(0.2)
+            time.sleep(0.18)
         else:
-            time.sleep(0.03)
-
+            time.sleep(0.04)
+            
+# ============================================================
+# PAGE ROUTES
+# ============================================================
 
 @app.route("/")
 def index():
     return redirect(url_for("login"))
 
-@app.route("/admin/clear-all")
-def clear_all_online():
-    try:
-        conn = sqlite3.connect("parking.db")
-        cur = conn.cursor()
-
-        tables = [
-            "vehicle_logs",
-            "events",
-            "audit_logs"
-        ]
-
-        for table in tables:
-            try:
-                cur.execute(f"DELETE FROM {table}")
-                cur.execute(
-                    f"DELETE FROM sqlite_sequence WHERE name='{table}'"
-                )
-            except:
-                pass
-
-        conn.commit()
-        conn.close()
-
-        return "✅ ONLINE DATABASE CLEARED"
-
-    except Exception as e:
-        return f"❌ ERROR: {e}"
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = None
 
     if request.method == "POST":
-        username = request.form.get("login")
-        password = request.form.get("password")
+        username = request.form.get("login", "").strip()
+        password = request.form.get("password", "").strip()
 
         db = get_db()
         user = db.execute(
-            "SELECT * FROM users WHERE login = ? AND password = ?",
+            """
+            SELECT *
+            FROM users
+            WHERE login = ?
+              AND password = ?
+            """,
             (username, password),
         ).fetchone()
-
-        if username == "Auezov" and password == "1943":
-            db.execute(
-                "INSERT OR REPLACE INTO users(login, password) VALUES (?, ?)",
-                ("Auezov", "1943"),
-            )
-            db.commit()
-            user = {"login": "Auezov"}
-
         db.close()
 
         if user:
             session["logged_in"] = True
+            session["login"] = username
             return redirect(url_for("dashboard"))
 
         error = "Логин немесе пароль қате"
@@ -805,10 +1004,13 @@ def journal():
 
     db = get_db()
 
-    rows = db.execute("""
-        SELECT * FROM vehicle_logs
+    rows = db.execute(
+        """
+        SELECT *
+        FROM vehicle_logs
         ORDER BY id DESC
-    """).fetchall()
+        """
+    ).fetchall()
 
     updated_logs = []
 
@@ -816,34 +1018,37 @@ def journal():
         log = dict(row)
 
         minutes, amount = calculate_amount_by_time(
-            log["entry_time"],
-            log["exit_time"]
+            log.get("entry_time"),
+            log.get("exit_time"),
         )
+
+        # Егер тегін рұқсат болса немесе төленген болса, соманы бұзбаймыз
+        if int(log.get("paid") or 0) == 1 and int(log.get("amount") or 0) == 0:
+            amount = 0
 
         log["live_minutes"] = minutes
         log["live_amount"] = amount
 
-        # базаға update
-        db.execute("""
+        db.execute(
+            """
             UPDATE vehicle_logs
             SET duration_minutes = ?,
                 amount = ?
             WHERE id = ?
-        """, (
-            minutes,
-            amount,
-            log["id"]
-        ))
+            """,
+            (
+                minutes,
+                amount,
+                log["id"],
+            ),
+        )
 
         updated_logs.append(log)
 
     db.commit()
     db.close()
 
-    return render_template(
-        "journal.html",
-        logs=updated_logs
-    )
+    return render_template("journal.html", logs=updated_logs)
 
 
 @app.route("/events")
@@ -885,13 +1090,51 @@ def events():
     )
 
 
+@app.route("/event/delete/<int:event_id>", methods=["POST"])
+def delete_event(event_id):
+    if not login_required():
+        return redirect(url_for("login"))
+
+    db = get_db()
+
+    row = db.execute(
+        "SELECT * FROM events WHERE id = ?",
+        (event_id,),
+    ).fetchone()
+
+    if row:
+        db.execute(
+            "DELETE FROM events WHERE id = ?",
+            (event_id,),
+        )
+        db.commit()
+
+        add_audit(
+            row.get("plate") if isinstance(row, dict) else row["plate"],
+            "Удалить событие",
+            str(dict(row)),
+            "",
+            "Событие өшірілді",
+        )
+
+    db.close()
+
+    return redirect(url_for("events"))
+
+
 @app.route("/audit")
 def audit():
     if not login_required():
         return redirect(url_for("login"))
 
     db = get_db()
-    logs = db.execute("SELECT * FROM audit_logs ORDER BY id DESC").fetchall()
+    logs = db.execute(
+        """
+        SELECT *
+        FROM audit_logs
+        ORDER BY id DESC
+        """
+    ).fetchall()
     db.close()
 
     return render_template("audit.html", logs=logs)
@@ -903,9 +1146,31 @@ def payments():
         return redirect(url_for("login"))
 
     db = get_db()
-    payments_data = db.execute("SELECT * FROM payments ORDER BY id DESC").fetchall()
-    lists = db.execute("SELECT * FROM lists ORDER BY id DESC").fetchall()
-    balances = db.execute("SELECT * FROM balances ORDER BY id DESC").fetchall()
+
+    payments_data = db.execute(
+        """
+        SELECT *
+        FROM payments
+        ORDER BY id DESC
+        """
+    ).fetchall()
+
+    lists = db.execute(
+        """
+        SELECT *
+        FROM lists
+        ORDER BY id DESC
+        """
+    ).fetchall()
+
+    balances = db.execute(
+        """
+        SELECT *
+        FROM balances
+        ORDER BY id DESC
+        """
+    ).fetchall()
+
     db.close()
 
     return render_template(
@@ -922,7 +1187,13 @@ def abonement():
         return redirect(url_for("login"))
 
     db = get_db()
-    rows = db.execute("SELECT * FROM abonements ORDER BY id DESC").fetchall()
+    rows = db.execute(
+        """
+        SELECT *
+        FROM abonements
+        ORDER BY id DESC
+        """
+    ).fetchall()
     db.close()
 
     return render_template("abonement.html", abonements=rows)
@@ -934,7 +1205,13 @@ def administration():
         return redirect(url_for("login"))
 
     db = get_db()
-    rows = db.execute("SELECT * FROM administration_access ORDER BY id DESC").fetchall()
+    rows = db.execute(
+        """
+        SELECT *
+        FROM administration_access
+        ORDER BY id DESC
+        """
+    ).fetchall()
     db.close()
 
     return render_template("administration.html", staff=rows)
@@ -945,9 +1222,11 @@ def client():
     return render_template("client.html")
 
 
-
 @app.route("/qr")
 def qr_page():
+    if not login_required():
+        return redirect(url_for("login"))
+
     return render_template("qr_links.html")
 
 
@@ -956,141 +1235,9 @@ def pay_page():
     return render_template("qr_pay.html")
 
 
-@app.route("/api/qr-check", methods=["POST"])
-def qr_check():
-    plate = normalize_plate(request.form.get("plate", ""))
-
-    if not plate:
-        return jsonify({"ok": False, "message": "Номер енгізіңіз"})
-
-    db = get_db()
-
-    logs = db.execute("""
-        SELECT *
-        FROM vehicle_logs
-        WHERE plate = ?
-        AND COALESCE(paid, 0) = 0
-        ORDER BY id DESC
-    """, (plate,)).fetchall()
-
-    if not logs:
-        db.close()
-        return jsonify({
-            "ok": False,
-            "message": "Номер журналда табылмады немесе қарыз жоқ"
-        })
-
-    total_amount = 0
-    total_minutes = 0
-
-    for log in logs:
-        amount = int(log["amount"] or 0)
-        minutes = int(log["duration_minutes"] or 0)
-
-        if amount <= 0:
-            minutes, amount = calculate_amount_by_time(
-                log["entry_time"],
-                log["exit_time"],
-            )
-
-        total_amount += int(amount or 0)
-        total_minutes += int(minutes or 0)
-
-    db.close()
-
-    return jsonify({
-        "ok": True,
-        "plate": plate,
-        "amount": total_amount,
-        "debt": total_amount,
-        "minutes": total_minutes,
-        "message": f"Жалпы тұрған уақыт: {total_minutes} минут. Төлеу керек: {total_amount} ₸"
-    })
-
-@app.route("/api/qr-pay", methods=["POST"])
-def qr_pay():
-    plate = normalize_plate(request.form.get("plate", ""))
-    amount = int(request.form.get("amount", 0))
-
-    if not plate:
-        return jsonify({
-            "ok": False,
-            "message": "Номер жоқ"
-        })
-
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    db = get_db()
-
-    unpaid_logs = db.execute(
-        """
-        SELECT *
-        FROM vehicle_logs
-        WHERE plate = ?
-        AND COALESCE(paid, 0) = 0
-        """,
-        (plate,),
-    ).fetchall()
-
-    if not unpaid_logs:
-        db.close()
-        return jsonify({
-            "ok": False,
-            "message": "Төленбеген қарыз табылмады"
-        })
-
-    total_amount = 0
-
-    for log in unpaid_logs:
-        minutes, log_amount = calculate_amount_by_time(
-            log["entry_time"],
-            log["exit_time"],
-        )
-        total_amount += int(log_amount or 0)
-
-    db.execute(
-        """
-        INSERT INTO payments(
-            plate,
-            amount,
-            method,
-            created_at
-        )
-        VALUES (?, ?, ?, ?)
-        """,
-        (
-            plate,
-            total_amount,
-            "QR DEMO",
-            now,
-        ),
-    )
-
-    db.execute(
-        """
-        UPDATE vehicle_logs
-        SET paid = 1
-        WHERE plate = ?
-        AND COALESCE(paid, 0) = 0
-        """,
-        (plate,),
-    )
-
-    db.commit()
-    db.close()
-
-    add_audit(
-        plate,
-        "QR төлем",
-        "",
-        f"{total_amount} ₸",
-        "Demo payment"
-    )
-
-    return jsonify({
-        "ok": True,
-        "amount": total_amount
-    })
+# ============================================================
+# VIDEO ROUTES
+# ============================================================
 
 @app.route("/video/<camera>")
 def video(camera):
@@ -1114,12 +1261,204 @@ def remote_video(camera):
     )
 
 
+# ============================================================
+# QR PAYMENT API
+# ============================================================
+
+@app.route("/api/qr-check", methods=["POST"])
+def qr_check():
+    plate = normalize_plate(request.form.get("plate", ""))
+
+    if not plate:
+        return jsonify({"ok": False, "message": "Номер енгізіңіз"})
+
+    db = get_db()
+
+    logs = db.execute(
+        """
+        SELECT *
+        FROM vehicle_logs
+        WHERE plate = ?
+          AND COALESCE(paid, 0) = 0
+        ORDER BY id DESC
+        """,
+        (plate,),
+    ).fetchall()
+
+    balance_row = db.execute(
+        """
+        SELECT *
+        FROM balances
+        WHERE plate = ?
+        """,
+        (plate,),
+    ).fetchone()
+
+    db.close()
+
+    if not logs:
+        return jsonify(
+            {
+                "ok": False,
+                "message": "Номер журналда табылмады немесе қарыз жоқ",
+            }
+        )
+
+    total_amount = 0
+    total_minutes = 0
+
+    for log in logs:
+        minutes, amount = calculate_amount_by_time(
+            log["entry_time"],
+            log["exit_time"],
+        )
+
+        total_amount += int(amount or 0)
+        total_minutes += int(minutes or 0)
+
+    balance = 0
+
+    if balance_row:
+        balance = int(balance_row["balance"] or 0)
+
+    debt = max(total_amount - balance, 0)
+
+    return jsonify(
+        {
+            "ok": True,
+            "plate": plate,
+            "amount": debt,
+            "debt": debt,
+            "balance": balance,
+            "minutes": total_minutes,
+            "message": f"Жалпы тұрған уақыт: {total_minutes} минут. Төлеу керек: {debt} ₸",
+        }
+    )
+
+
+@app.route("/api/qr-pay", methods=["POST"])
+def qr_pay():
+    plate = normalize_plate(request.form.get("plate", ""))
+
+    if not plate:
+        return jsonify({"ok": False, "message": "Номер жоқ"})
+
+    db = get_db()
+
+    unpaid_logs = db.execute(
+        """
+        SELECT *
+        FROM vehicle_logs
+        WHERE plate = ?
+          AND COALESCE(paid, 0) = 0
+        ORDER BY id DESC
+        """,
+        (plate,),
+    ).fetchall()
+
+    if not unpaid_logs:
+        db.close()
+        return jsonify({"ok": False, "message": "Төленбеген қарыз табылмады"})
+
+    total_amount = 0
+
+    for log in unpaid_logs:
+        _, amount = calculate_amount_by_time(
+            log["entry_time"],
+            log["exit_time"],
+        )
+        total_amount += int(amount or 0)
+
+    balance_row = db.execute(
+        "SELECT * FROM balances WHERE plate = ?",
+        (plate,),
+    ).fetchone()
+
+    balance = int(balance_row["balance"] or 0) if balance_row else 0
+    pay_amount = max(total_amount - balance, 0)
+
+    db.execute(
+        """
+        INSERT INTO payments(plate, amount, method, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            plate,
+            pay_amount,
+            "QR DEMO",
+            now_str(),
+        ),
+    )
+
+    db.execute(
+        """
+        UPDATE vehicle_logs
+        SET paid = 1
+        WHERE plate = ?
+          AND COALESCE(paid, 0) = 0
+        """,
+        (plate,),
+    )
+
+    if balance > 0:
+        db.execute(
+            """
+            UPDATE balances
+            SET balance = ?
+            WHERE plate = ?
+            """,
+            (max(balance - total_amount, 0), plate),
+        )
+
+    db.commit()
+    db.close()
+
+    add_audit(
+        plate,
+        "QR төлем",
+        "",
+        f"{pay_amount} ₸",
+        "Demo payment",
+    )
+
+    return jsonify(
+        {
+            "ok": True,
+            "amount": pay_amount,
+        }
+    )
+    
+# ============================================================
+# GENERAL API ROUTES
+# ============================================================
+
 @app.route("/api/last-plates")
 def api_last_plates():
-    return jsonify({
-        "entry": state["cam1_plate"],
-        "exit": state["cam2_plate"],
-    })
+    with state_lock:
+        entry = state["entry_plate"]
+        exit_plate = state["exit_plate"]
+
+    return jsonify(
+        {
+            "entry": entry,
+            "exit": exit_plate,
+        }
+    )
+
+
+@app.route("/api/system-status")
+def api_system_status():
+    with state_lock:
+        data = {
+            "entry_connected": state["entry_connected"],
+            "exit_connected": state["exit_connected"],
+            "entry_message": state["entry_message"],
+            "exit_message": state["exit_message"],
+            "entry_plate": state["entry_plate"],
+            "exit_plate": state["exit_plate"],
+        }
+
+    return jsonify({"ok": True, **data})
 
 
 @app.route("/api/manual-entry", methods=["POST"])
@@ -1133,25 +1472,47 @@ def manual_entry():
     free, free_type = has_free_access(plate)
 
     if direction == "entry":
-        add_entry(plate, "Қолмен кіргізілді", None)
+        saved = add_entry(plate, "Қолмен кіргізілді", None)
 
-        if free:
+        if saved and free:
             mark_last_log_free(plate, free_type)
 
-        add_audit(plate, "Manual entry", "", plate, f"Қолмен кіргізілді | {free_type if free else 'Ақылы'}")
-        state["cam1_plate"] = plate
+        add_audit(
+            plate,
+            "Manual entry",
+            "",
+            plate,
+            f"Қолмен кіргізілді | {free_type if free else 'Ақылы'}",
+        )
+
+        with state_lock:
+            state["entry_plate"] = plate
 
     elif direction == "exit":
-        success = add_exit(plate, "Қолмен шығарылды", None)
+        saved = add_exit(plate, "Қолмен шығарылды", None)
 
-        if success and free:
+        if saved and free:
             mark_last_log_free(plate, free_type)
 
-        add_audit(plate, "Manual exit", "", plate, f"Қолмен шығарылды | {free_type if free else 'Ақылы'}")
-        state["cam2_plate"] = plate
+        add_audit(
+            plate,
+            "Manual exit",
+            "",
+            plate,
+            f"Қолмен шығарылды | {free_type if free else 'Ақылы'}",
+        )
 
-        if not success:
-            return jsonify({"ok": False, "message": "Бұл номер ішкі журналда табылмады"})
+        with state_lock:
+            state["exit_plate"] = plate
+
+        if not saved:
+            return jsonify(
+                {
+                    "ok": False,
+                    "message": "Бұл номер ішкі журналда табылмады",
+                }
+            )
+
     else:
         return jsonify({"ok": False, "message": "Бағыт қате"})
 
@@ -1167,46 +1528,70 @@ def barrier():
     if name not in ["entry", "exit"]:
         return jsonify({"ok": False, "message": "Шлагбаум аты қате"})
 
-    key = "cam1" if name == "entry" else "cam2"
-
     if action == "open":
-        barriers[key]["state"] = "open"
+        barriers[name]["state"] = "open"
+
     elif action == "close":
-        barriers[key]["state"] = "closed"
+        barriers[name]["state"] = "closed"
+
     elif action == "fix_open":
-        barriers[key]["state"] = "open"
-        barriers[key]["fixed_open"] = True
-        barriers[key]["fixed_close"] = False
+        barriers[name]["state"] = "open"
+        barriers[name]["fixed_open"] = True
+        barriers[name]["fixed_close"] = False
+
     elif action == "fix_close":
-        barriers[key]["state"] = "closed"
-        barriers[key]["fixed_close"] = True
-        barriers[key]["fixed_open"] = False
+        barriers[name]["state"] = "closed"
+        barriers[name]["fixed_close"] = True
+        barriers[name]["fixed_open"] = False
+
     elif action == "unfix":
-        barriers[key]["fixed_open"] = False
-        barriers[key]["fixed_close"] = False
+        barriers[name]["fixed_open"] = False
+        barriers[name]["fixed_close"] = False
+
     else:
         return jsonify({"ok": False, "message": "Action қате"})
 
     fixed_state = "none"
 
-    if barriers[key]["fixed_open"]:
+    if barriers[name]["fixed_open"]:
         fixed_state = "open"
 
-    if barriers[key]["fixed_close"]:
+    if barriers[name]["fixed_close"]:
         fixed_state = "closed"
 
     db = get_db()
     db.execute(
-        "UPDATE barriers SET state = ?, fixed_state = ? WHERE name = ?",
-        (barriers[key]["state"], fixed_state, name),
+        """
+        UPDATE barriers
+        SET state = ?,
+            fixed_state = ?,
+            updated_at = ?
+        WHERE name = ?
+        """,
+        (
+            barriers[name]["state"],
+            fixed_state,
+            now_str(),
+            name,
+        ),
     )
     db.commit()
     db.close()
 
-    add_audit(name, f"Barrier {action}", "", barriers[key]["state"], reason)
+    add_audit(
+        name,
+        f"Barrier {action}",
+        "",
+        barriers[name]["state"],
+        reason,
+    )
 
     return jsonify({"ok": True})
 
+
+# ============================================================
+# ABONEMENT / ADMINISTRATION
+# ============================================================
 
 @app.route("/api/abonement", methods=["POST"])
 def api_abonement():
@@ -1216,37 +1601,68 @@ def api_abonement():
     group_name = request.form.get("group_name", "").strip()
 
     if not plate or not full_name or not phone:
-        return jsonify({"ok": False, "message": "Аты-жөні, телефон, номер міндетті"})
+        return jsonify(
+            {
+                "ok": False,
+                "message": "Аты-жөні, телефон, номер міндетті",
+            }
+        )
 
     now = datetime.now()
     start_date = now.strftime("%Y-%m-%d")
     end_date = (now + timedelta(days=30)).strftime("%Y-%m-%d")
-    created_at = now.strftime("%Y-%m-%d %H:%M:%S")
+    created_at = now_str()
 
     db = get_db()
     db.execute(
         """
-        INSERT OR REPLACE INTO abonements(
+        INSERT INTO abonements(
             full_name,
             phone,
             plate,
             group_name,
             price,
+            paid,
             start_date,
             end_date,
             active,
             created_at
         )
-        VALUES (?, ?, ?, ?, 5000, ?, ?, 1, ?)
+        VALUES (?, ?, ?, ?, 5000, 0, ?, ?, 1, ?)
+        ON CONFLICT (plate)
+        DO UPDATE SET
+            full_name = excluded.full_name,
+            phone = excluded.phone,
+            group_name = excluded.group_name,
+            price = 5000,
+            start_date = excluded.start_date,
+            end_date = excluded.end_date,
+            active = 1,
+            created_at = excluded.created_at
         """,
-        (full_name, phone, plate, group_name, start_date, end_date, created_at),
+        (
+            full_name,
+            phone,
+            plate,
+            group_name,
+            start_date,
+            end_date,
+            created_at,
+        ),
     )
     db.commit()
     db.close()
 
-    add_audit(plate, "Абонемент қосылды", "", f"{full_name} | 5000 ₸ | {end_date}", "1 айлық абонемент")
+    add_audit(
+        plate,
+        "Абонемент қосылды",
+        "",
+        f"{full_name} | 5000 ₸ | {end_date}",
+        "1 айлық абонемент",
+    )
 
     return jsonify({"ok": True})
+
 
 @app.route("/api/abonement/pay", methods=["POST"])
 def pay_abonement():
@@ -1276,14 +1692,12 @@ def pay_abonement():
         (plate,),
     )
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
     db.execute(
         """
         INSERT INTO payments(plate, amount, method, created_at)
         VALUES (?, ?, ?, ?)
         """,
-        (plate, 5000, "Абонемент", now),
+        (plate, 5000, "Абонемент", now_str()),
     )
 
     db.commit()
@@ -1299,6 +1713,7 @@ def pay_abonement():
 
     return jsonify({"ok": True})
 
+
 @app.route("/api/administration", methods=["POST"])
 def api_administration():
     plate = normalize_plate(request.form.get("plate", ""))
@@ -1307,14 +1722,17 @@ def api_administration():
     position = request.form.get("position", "").strip()
 
     if not plate or not full_name or not phone or not position:
-        return jsonify({"ok": False, "message": "Барлық мәліметті толтырыңыз"})
-
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return jsonify(
+            {
+                "ok": False,
+                "message": "Барлық мәліметті толтырыңыз",
+            }
+        )
 
     db = get_db()
     db.execute(
         """
-        INSERT OR REPLACE INTO administration_access(
+        INSERT INTO administration_access(
             full_name,
             phone,
             plate,
@@ -1323,13 +1741,32 @@ def api_administration():
             created_at
         )
         VALUES (?, ?, ?, ?, 1, ?)
+        ON CONFLICT (plate)
+        DO UPDATE SET
+            full_name = excluded.full_name,
+            phone = excluded.phone,
+            position = excluded.position,
+            active = 1,
+            created_at = excluded.created_at
         """,
-        (full_name, phone, plate, position, now),
+        (
+            full_name,
+            phone,
+            plate,
+            position,
+            now_str(),
+        ),
     )
     db.commit()
     db.close()
 
-    add_audit(plate, "Администрация access", "", f"{full_name} | {position}", "Тегін кіру рұқсаты")
+    add_audit(
+        plate,
+        "Администрация access",
+        "",
+        f"{full_name} | {position}",
+        "Тегін кіру рұқсаты",
+    )
 
     return jsonify({"ok": True})
 
@@ -1340,17 +1777,30 @@ def delete_free_access():
     plate = normalize_plate(request.form.get("plate", ""))
 
     if table not in ["abonements", "administration_access"]:
-        return jsonify({"ok": False})
+        return jsonify({"ok": False, "message": "Кесте қате"})
 
     db = get_db()
-    db.execute(f"UPDATE {table} SET active = 0 WHERE plate = ?", (plate,))
+    db.execute(
+        f"UPDATE {table} SET active = 0 WHERE plate = ?",
+        (plate,),
+    )
     db.commit()
     db.close()
 
-    add_audit(plate, "Free access disabled", table, "active=0", "Рұқсат өшірілді")
+    add_audit(
+        plate,
+        "Free access disabled",
+        table,
+        "active=0",
+        "Рұқсат өшірілді",
+    )
 
     return jsonify({"ok": True})
 
+
+# ============================================================
+# JOURNAL EDIT API
+# ============================================================
 
 @app.route("/api/journal/edit-plate", methods=["POST"])
 def edit_plate():
@@ -1361,16 +1811,33 @@ def edit_plate():
         return jsonify({"ok": False, "message": "Номер дұрыс емес"})
 
     db = get_db()
-    db.execute("UPDATE vehicle_logs SET plate = ? WHERE plate = ?", (new_plate, old_plate))
-    db.execute("UPDATE events SET plate = ? WHERE plate = ?", (new_plate, old_plate))
-    db.execute("UPDATE payments SET plate = ? WHERE plate = ?", (new_plate, old_plate))
-    db.execute("UPDATE balances SET plate = ? WHERE plate = ?", (new_plate, old_plate))
-    db.execute("UPDATE abonements SET plate = ? WHERE plate = ?", (new_plate, old_plate))
-    db.execute("UPDATE administration_access SET plate = ? WHERE plate = ?", (new_plate, old_plate))
+
+    tables = [
+        "vehicle_logs",
+        "events",
+        "payments",
+        "balances",
+        "abonements",
+        "administration_access",
+        "lists",
+    ]
+
+    for table in tables:
+        db.execute(
+            f"UPDATE {table} SET plate = ? WHERE plate = ?",
+            (new_plate, old_plate),
+        )
+
     db.commit()
     db.close()
 
-    add_audit(new_plate, "Изменить номер", old_plate, new_plate, f"{old_plate} → {new_plate}")
+    add_audit(
+        new_plate,
+        "Изменить номер",
+        old_plate,
+        new_plate,
+        f"{old_plate} → {new_plate}",
+    )
 
     return jsonify({"ok": True})
 
@@ -1385,7 +1852,11 @@ def edit_time():
         exit_time = None
 
     db = get_db()
-    old = db.execute("SELECT * FROM vehicle_logs WHERE id = ?", (log_id,)).fetchone()
+
+    old = db.execute(
+        "SELECT * FROM vehicle_logs WHERE id = ?",
+        (log_id,),
+    ).fetchone()
 
     if not old:
         db.close()
@@ -1416,7 +1887,16 @@ def edit_time():
             note = ?
         WHERE id = ?
         """,
-        (entry_time, exit_time, minutes, amount, status, paid, note, log_id),
+        (
+            entry_time,
+            exit_time,
+            minutes,
+            amount,
+            status,
+            paid,
+            note,
+            log_id,
+        ),
     )
 
     db.commit()
@@ -1438,17 +1918,37 @@ def delete_debt():
     log_id = request.form.get("log_id")
 
     db = get_db()
-    row = db.execute("SELECT * FROM vehicle_logs WHERE id = ?", (log_id,)).fetchone()
+
+    row = db.execute(
+        "SELECT * FROM vehicle_logs WHERE id = ?",
+        (log_id,),
+    ).fetchone()
 
     if not row:
         db.close()
         return jsonify({"ok": False, "message": "Журнал табылмады"})
 
-    db.execute("UPDATE vehicle_logs SET amount = 0, paid = 1 WHERE id = ?", (log_id,))
+    db.execute(
+        """
+        UPDATE vehicle_logs
+        SET amount = 0,
+            paid = 1,
+            note = ?
+        WHERE id = ?
+        """,
+        ("Қарыз өшірілді", log_id),
+    )
+
     db.commit()
     db.close()
 
-    add_audit(row["plate"], "Удалить задолженность", str(row["amount"]), "0", "Қарыз өшірілді")
+    add_audit(
+        row["plate"],
+        "Удалить задолженность",
+        str(row["amount"]),
+        "0",
+        "Қарыз өшірілді",
+    )
 
     return jsonify({"ok": True})
 
@@ -1458,43 +1958,76 @@ def delete_log():
     log_id = request.form.get("log_id")
 
     db = get_db()
-    row = db.execute("SELECT * FROM vehicle_logs WHERE id = ?", (log_id,)).fetchone()
+
+    row = db.execute(
+        "SELECT * FROM vehicle_logs WHERE id = ?",
+        (log_id,),
+    ).fetchone()
 
     if not row:
         db.close()
         return jsonify({"ok": False, "message": "Журнал табылмады"})
 
-    db.execute("DELETE FROM vehicle_logs WHERE id = ?", (log_id,))
+    db.execute(
+        "DELETE FROM vehicle_logs WHERE id = ?",
+        (log_id,),
+    )
+
     db.commit()
     db.close()
 
-    add_audit(row["plate"], "Удалить из журнала", str(dict(row)), "", "Журналдан өшірілді")
+    add_audit(
+        row["plate"],
+        "Удалить из журнала",
+        str(dict(row)),
+        "",
+        "Журналдан өшірілді",
+    )
 
     return jsonify({"ok": True})
 
+
+# ============================================================
+# PAYMENTS / LISTS / BALANCE API
+# ============================================================
 
 @app.route("/api/list", methods=["POST"])
 def api_list():
     plate = normalize_plate(request.form.get("plate", ""))
     list_type = request.form.get("type")
     reason = request.form.get("reason", "")
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     if not plate or list_type not in ["white", "black"]:
-        return jsonify({"ok": False})
+        return jsonify({"ok": False, "message": "Номер немесе тип қате"})
 
     db = get_db()
     db.execute(
         """
-        INSERT OR REPLACE INTO lists(plate, type, reason, created_at)
+        INSERT INTO lists(plate, type, reason, created_at)
         VALUES (?, ?, ?, ?)
+        ON CONFLICT (plate)
+        DO UPDATE SET
+            type = excluded.type,
+            reason = excluded.reason,
+            created_at = excluded.created_at
         """,
-        (plate, list_type, reason, now),
+        (
+            plate,
+            list_type,
+            reason,
+            now_str(),
+        ),
     )
     db.commit()
     db.close()
 
-    add_audit(plate, f"Add {list_type} list", "", list_type, reason)
+    add_audit(
+        plate,
+        f"Add {list_type} list",
+        "",
+        list_type,
+        reason,
+    )
 
     return jsonify({"ok": True})
 
@@ -1504,12 +2037,23 @@ def api_payment():
     plate = normalize_plate(request.form.get("plate", ""))
     amount = int(request.form.get("amount", 0))
     method = request.form.get("method", "Kaspi")
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    if not plate or amount <= 0:
+        return jsonify({"ok": False, "message": "Номер немесе сома қате"})
 
     db = get_db()
+
     db.execute(
-        "INSERT INTO payments(plate, amount, method, created_at) VALUES (?, ?, ?, ?)",
-        (plate, amount, method, now),
+        """
+        INSERT INTO payments(plate, amount, method, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            plate,
+            amount,
+            method,
+            now_str(),
+        ),
     )
 
     db.execute(
@@ -1530,7 +2074,13 @@ def api_payment():
     db.commit()
     db.close()
 
-    add_audit(plate, "Payment", "", f"{amount} ₸", method)
+    add_audit(
+        plate,
+        "Payment",
+        "",
+        f"{amount} ₸",
+        method,
+    )
 
     return jsonify({"ok": True})
 
@@ -1541,38 +2091,53 @@ def api_balance():
     amount = int(request.form.get("amount", 0))
     operation = request.form.get("operation")
 
+    if not plate or amount <= 0:
+        return jsonify({"ok": False, "message": "Номер немесе сома қате"})
+
     if operation == "minus":
         amount = -amount
 
     db = get_db()
-    db.execute("INSERT OR IGNORE INTO balances(plate, balance) VALUES (?, 0)", (plate,))
-    db.execute("UPDATE balances SET balance = balance + ? WHERE plate = ?", (amount, plate))
+
+    db.execute(
+        """
+        INSERT INTO balances(plate, balance)
+        VALUES (?, 0)
+        ON CONFLICT (plate)
+        DO NOTHING
+        """,
+        (plate,),
+    )
+
+    db.execute(
+        """
+        UPDATE balances
+        SET balance = balance + ?
+        WHERE plate = ?
+        """,
+        (
+            amount,
+            plate,
+        ),
+    )
+
     db.commit()
     db.close()
 
-    add_audit(plate, "Balance", "", str(amount), operation)
+    add_audit(
+        plate,
+        "Balance",
+        "",
+        str(amount),
+        operation,
+    )
 
     return jsonify({"ok": True})
 
-@app.route("/api/sync-entry", methods=["POST"])
-def api_sync_entry():
-    data = request.get_json(silent=True) or {}
 
-    plate = normalize_plate(data.get("plate", ""))
-    post = data.get("post", "Гл корпус кіріс")
-    direction = data.get("direction", "entry")
-    image_path = data.get("image_path", "")
-
-    if not plate:
-        return {"ok": False, "error": "plate required"}, 400
-
-    if direction == "exit":
-        ok = add_exit(plate, post, image_path)
-        return {"ok": True, "plate": plate, "direction": "exit", "saved": ok}
-
-    add_entry(plate, post, image_path)
-    return {"ok": True, "plate": plate, "direction": "entry", "saved": True}
-
+# ============================================================
+# CLIENT STATUS API
+# ============================================================
 
 @app.route("/api/client-status", methods=["POST"])
 def client_status():
@@ -1580,11 +2145,13 @@ def client_status():
     messages = []
 
     if not plate:
-        return jsonify({
-            "ok": True,
-            "plate": plate,
-            "messages": ["Номер енгізілмеді."]
-        })
+        return jsonify(
+            {
+                "ok": True,
+                "plate": plate,
+                "messages": ["Номер енгізілмеді."],
+            }
+        )
 
     db = get_db()
 
@@ -1593,7 +2160,7 @@ def client_status():
         SELECT *
         FROM vehicle_logs
         WHERE plate = ?
-        AND COALESCE(paid, 0) = 0
+          AND COALESCE(paid, 0) = 0
         ORDER BY id DESC
         """,
         (plate,),
@@ -1636,14 +2203,10 @@ def client_status():
         total_minutes = 0
 
         for log in unpaid_logs:
-            amount = int(log["amount"] or 0)
-            minutes = int(log["duration_minutes"] or 0)
-
-            if amount <= 0:
-                minutes, amount = calculate_amount_by_time(
-                    log["entry_time"],
-                    log["exit_time"],
-                )
+            minutes, amount = calculate_amount_by_time(
+                log["entry_time"],
+                log["exit_time"],
+            )
 
             total_amount += int(amount or 0)
             total_minutes += int(minutes or 0)
@@ -1663,17 +2226,54 @@ def client_status():
     if balance:
         messages.append(f"Сіздің баланс: {balance['balance']} ₸")
 
-    return jsonify({
+    return jsonify(
+        {
+            "ok": True,
+            "plate": plate,
+            "messages": messages,
+        }
+    )
+
+
+# ============================================================
+# CLOUD / REMOTE SYNC
+# ============================================================
+
+@app.route("/api/sync-entry", methods=["POST"])
+def api_sync_entry():
+    data = request.get_json(silent=True) or {}
+
+    plate = normalize_plate(data.get("plate", ""))
+    post = data.get("post", "Гл корпус кіріс")
+    direction = data.get("direction", "entry")
+    image_path = data.get("image_path", "")
+
+    if not plate:
+        return {"ok": False, "error": "plate required"}, 400
+
+    if direction == "exit":
+        ok = add_exit(plate, post, image_path)
+        return {
+            "ok": True,
+            "plate": plate,
+            "direction": "exit",
+            "saved": ok,
+        }
+
+    ok = add_entry(plate, post, image_path)
+    return {
         "ok": True,
         "plate": plate,
-        "messages": messages,
-    })
+        "direction": "entry",
+        "saved": ok,
+    }
+
 
 @app.route("/api/remote-entry", methods=["POST"])
 def remote_entry():
     secret = request.form.get("secret", "")
 
-    if secret != "auezov-secret-2026":
+    if secret != os.getenv("REMOTE_SECRET", "auezov-secret-2026"):
         return jsonify({"ok": False, "message": "Құпия кілт қате"}), 403
 
     plate = normalize_plate(request.form.get("plate", ""))
@@ -1689,40 +2289,110 @@ def remote_entry():
         image = request.files["image"]
 
         if image and image.filename:
-            os.makedirs("static/captures", exist_ok=True)
+            UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
             filename = f"remote_{direction}_{plate}_{int(time.time())}.jpg"
-            save_path = os.path.join("static", "captures", filename)
+            save_path = UPLOAD_DIR / filename
 
-            image.save(save_path)
+            image.save(str(save_path))
             image_path = f"/static/captures/{filename}"
 
     if direction == "entry":
         saved = add_entry(plate, camera, image_path)
 
-        if not saved:
-            add_event(plate, camera, "entry_repeat", image_path)
-
     elif direction == "exit":
         saved = add_exit(plate, camera, image_path)
-
-        if not saved:
-            add_event(plate, camera, "exit_not_found", image_path)
 
     else:
         return jsonify({"ok": False, "message": "direction қате"}), 400
 
-    return jsonify({
-        "ok": True,
-        "plate": plate,
-        "direction": direction,
-        "image": image_path
-    })
+    return jsonify(
+        {
+            "ok": True,
+            "plate": plate,
+            "direction": direction,
+            "saved": saved,
+            "image": image_path,
+        }
+    )
+
+
+# ============================================================
+# ADMIN / HEALTH
+# ============================================================
+
+@app.route("/health")
+def health():
+    db = get_db()
+
+    try:
+        row = db.execute(
+            """
+            SELECT
+                current_database() AS database_name,
+                current_user AS database_user,
+                inet_server_addr() AS server_ip
+            """
+        ).fetchone()
+
+        db_info = dict(row) if row else {}
+
+    except Exception as e:
+        db_info = {"error": str(e)}
+
+    finally:
+        db.close()
+
+    return jsonify(
+        {
+            "ok": True,
+            "app": "Auezov Parking",
+            "db": "PostgreSQL" if DATABASE_URL else "SQLite fallback",
+            "database_url_exists": bool(DATABASE_URL),
+            "camera_enabled": ENABLE_CAMERA,
+            "is_render": IS_RENDER,
+            "db_info": db_info,
+        }
+    )
+
+
+@app.route("/admin/clear-all")
+def clear_all_online():
+    if not login_required():
+        return redirect(url_for("login"))
+
+    db = get_db()
+
+    tables = [
+        "vehicle_logs",
+        "events",
+        "audit_logs",
+    ]
+
+    for table in tables:
+        db.execute(f"DELETE FROM {table}")
+
+    db.commit()
+    db.close()
+
+    add_audit(
+        "SYSTEM",
+        "Clear demo data",
+        "",
+        "",
+        "Журнал, события, аудит тазаланды",
+    )
+
+    return "✅ DATABASE CLEARED"
+
+
+# ============================================================
+# APP START
+# ============================================================
 
 if __name__ == "__main__":
-    init_db()
-    entry_cap = open_laptop_camera()
-    exit_cap = open_droidcam()
+    if ENABLE_CAMERA and not IS_RENDER:
+        start_all_camera_workers()
 
     app.run(
         debug=False,
