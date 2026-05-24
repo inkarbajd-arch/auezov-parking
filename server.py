@@ -461,6 +461,57 @@ def send_to_render(plate, camera, event_type, image_path=None):
         return False
 
 
+def upload_capture_to_render(plate, camera_name, image_path):
+    """
+    Локалда сақталған суретті Render серверге жібереді.
+    Render суретті static/captures ішіне сақтап,
+    PostgreSQL-дегі соңғы event және vehicle_logs image_path мәнін жаңартады.
+    """
+    try:
+        if not image_path:
+            return False
+
+        real_image_path = None
+
+        if image_path.startswith("/static/"):
+            real_image_path = BASE_DIR / image_path.lstrip("/")
+        else:
+            real_image_path = Path(image_path)
+
+        if not real_image_path.exists():
+            print("⚠️ Upload image табылмады:", real_image_path)
+            return False
+
+        upload_url = os.getenv(
+            "RENDER_UPLOAD_URL",
+            "https://auezovparking.xyz/api/upload-capture",
+        )
+
+        data = {
+            "secret": os.getenv("REMOTE_SECRET", "auezov-secret-2026"),
+            "plate": plate,
+            "camera_name": camera_name,
+        }
+
+        with open(real_image_path, "rb") as f:
+            files = {"image": f}
+
+            response = requests.post(
+                upload_url,
+                data=data,
+                files=files,
+                timeout=6,
+            )
+
+        print("☁️ Capture upload:", response.status_code, response.text[:120])
+
+        return response.status_code == 200
+
+    except Exception as e:
+        print("⚠️ Capture upload қатесі:", e)
+        return False
+
+
 def is_blacklisted(plate):
     db = get_db()
     row = db.execute(
@@ -679,6 +730,8 @@ def read_plate_from_frame(frame):
 def save_detected_plate(plate, camera_name, frame):
     """
     Расталған номерді PostgreSQL базаға сақтайды.
+    Локалда сақталған суретті Render серверге upload қылады,
+    сонда доменде /events бетінде сурет ашылады.
     """
     if not is_good_plate(plate):
         return
@@ -705,21 +758,19 @@ def save_detected_plate(plate, camera_name, frame):
     image_path = save_frame(frame, camera_name)
     print("💾 Сақталуда:", plate, camera_name)
 
+    # 1) BLACKLIST
     if is_blacklisted(plate):
         add_event(plate, "Гл корпус", "blacklist", image_path)
 
-        send_to_render(
-            plate,
-            camera_label,
-            event_type,
-            image_path,
-        )
+        # Event базаға жазылғаннан кейін суретті доменге upload қыламыз
+        upload_capture_to_render(plate, camera_name, image_path)
 
         print(f"⛔ BLACKLIST: {plate}")
         return
 
     free, free_type = has_free_access(plate)
 
+    # 2) ENTRY
     if camera_name == "entry":
         saved = add_entry(plate, camera_label, image_path)
 
@@ -727,18 +778,15 @@ def save_detected_plate(plate, camera_name, frame):
             if free:
                 mark_last_log_free(plate, free_type)
 
-            send_to_render(
-                plate,
-                camera_label,
-                event_type,
-                image_path,
-            )
+            # add_entry event жазғаннан кейін ғана upload
+            upload_capture_to_render(plate, camera_name, image_path)
 
             print(f"✅ ENTRY SAVED: {plate}")
 
         else:
             print(f"⚠️ ENTRY сақталмады: {plate} already inside болуы мүмкін")
 
+    # 3) EXIT
     else:
         saved = add_exit(plate, camera_label, image_path)
 
@@ -746,40 +794,52 @@ def save_detected_plate(plate, camera_name, frame):
             if free:
                 mark_last_log_free(plate, free_type)
 
-            send_to_render(
-                plate,
-                camera_label,
-                event_type,
-                image_path,
-            )
+            # add_exit event жазғаннан кейін ғана upload
+            upload_capture_to_render(plate, camera_name, image_path)
 
             print(f"✅ EXIT SAVED: {plate}")
 
         else:
             add_event(plate, camera_label, "exit_not_found", image_path)
+
+            # exit_not_found event жазылғаннан кейін upload
+            upload_capture_to_render(plate, camera_name, image_path)
+
             print(f"⚠️ EXIT сақталмады: {plate} inside табылмады")
 
 
 def process_alpr_interval(camera_name, frame):
     """
-    Номерді әр кадрда емес, worker ішінен белгілі интервалмен оқимыз.
+    Номер 2 рет бірдей оқылса ғана базаға сақтайды.
+    Бірақ тез жұмыс істеуі үшін растау уақыты қысқа.
     """
     plate = read_plate_from_frame(frame)
 
     if not is_good_plate(plate):
-        with state_lock:
-            if camera_name == "entry":
-                state["entry_plate"] = "---"
-            else:
-                state["exit_plate"] = "---"
+        # Номер оқылмаса, бұрынғы жақсы номерді бірден өшірмейміз.
+        # Әйтпесе камерада номер көрініп тұрса да экранда --- болып жыпылықтай береді.
         return
 
-    # Бір номер кемінде 2 рет қатар оқылса ғана сақтаймыз
-    if plate == plate_confirm[camera_name]["last"]:
-        plate_confirm[camera_name]["count"] += 1
-    else:
+    now = time.time()
+
+    # Егер жаңа номер оқылса — растауды қайта бастаймыз
+    if plate != plate_confirm[camera_name].get("last", ""):
         plate_confirm[camera_name]["last"] = plate
         plate_confirm[camera_name]["count"] = 1
+        plate_confirm[camera_name]["time"] = now
+
+        with state_lock:
+            if camera_name == "entry":
+                state["entry_plate"] = plate
+            else:
+                state["exit_plate"] = plate
+
+        print(f"⏳ Растау: {plate} (1/2)")
+        return
+
+    # Егер сол номер қайта оқылса — count көбейтеміз
+    plate_confirm[camera_name]["count"] += 1
+    plate_confirm[camera_name]["time"] = now
 
     with state_lock:
         if camera_name == "entry":
@@ -787,17 +847,18 @@ def process_alpr_interval(camera_name, frame):
         else:
             state["exit_plate"] = plate
 
-    if plate_confirm[camera_name]["count"] < 2:
-        print(
-            f"⏳ Растау: {plate} "
-            f"({plate_confirm[camera_name]['count']}/2)"
-        )
-        return
+    print(
+        f"⏳ Растау: {plate} "
+        f"({plate_confirm[camera_name]['count']}/2)"
+    )
 
-    save_detected_plate(plate, camera_name, frame)
+    # 2 рет сәйкес келсе — базаға сақтаймыз
+    if plate_confirm[camera_name]["count"] >= 2:
+        save_detected_plate(plate, camera_name, frame)
 
-    plate_confirm[camera_name]["last"] = ""
-    plate_confirm[camera_name]["count"] = 0
+        plate_confirm[camera_name]["last"] = ""
+        plate_confirm[camera_name]["count"] = 0
+        plate_confirm[camera_name]["time"] = 0
 
 
 # ============================================================
@@ -875,7 +936,7 @@ def camera_worker(camera_name):
 
             # ALPR әр 1 секундта ғана
             now = time.time()
-            if now - last_alpr_time >= 2.0:
+            if now - last_alpr_time >= 1.0:
                 last_alpr_time = now
                 process_alpr_interval(camera_name, frame.copy())
 
@@ -2320,6 +2381,101 @@ def remote_entry():
         }
     )
 
+
+@app.route("/api/upload-capture", methods=["POST"])
+def upload_capture():
+    secret = request.form.get("secret", "")
+
+    if secret != os.getenv("REMOTE_SECRET", "auezov-secret-2026"):
+        return jsonify({"ok": False, "message": "Құпия кілт қате"}), 403
+
+    plate = normalize_plate(request.form.get("plate", ""))
+    camera_name = request.form.get("camera_name", "entry")
+
+    if not plate:
+        return jsonify({"ok": False, "message": "Номер жоқ"}), 400
+
+    if "image" not in request.files:
+        return jsonify({"ok": False, "message": "Сурет жоқ"}), 400
+
+    image = request.files["image"]
+
+    if not image or not image.filename:
+        return jsonify({"ok": False, "message": "Файл аты жоқ"}), 400
+
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+    filename = f"cloud_{camera_name}_{plate}_{int(time.time())}.jpg"
+    save_path = UPLOAD_DIR / filename
+
+    image.save(str(save_path))
+
+    image_url = f"/static/captures/{filename}"
+
+    db = get_db()
+
+    latest_event = db.execute(
+        """
+        SELECT id
+        FROM events
+        WHERE plate = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (plate,),
+    ).fetchone()
+
+    if latest_event:
+        db.execute(
+            """
+            UPDATE events
+            SET image_path = ?
+            WHERE id = ?
+            """,
+            (image_url, latest_event["id"]),
+        )
+
+    if camera_name == "entry":
+        db.execute(
+            """
+            UPDATE vehicle_logs
+            SET entry_image = ?
+            WHERE id = (
+                SELECT id
+                FROM vehicle_logs
+                WHERE plate = ?
+                ORDER BY id DESC
+                LIMIT 1
+            )
+            """,
+            (image_url, plate),
+        )
+    else:
+        db.execute(
+            """
+            UPDATE vehicle_logs
+            SET exit_image = ?
+            WHERE id = (
+                SELECT id
+                FROM vehicle_logs
+                WHERE plate = ?
+                ORDER BY id DESC
+                LIMIT 1
+            )
+            """,
+            (image_url, plate),
+        )
+
+    db.commit()
+    db.close()
+
+    return jsonify(
+        {
+            "ok": True,
+            "plate": plate,
+            "image_url": image_url,
+        }
+    )
 
 # ============================================================
 # ADMIN / HEALTH
