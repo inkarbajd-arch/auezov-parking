@@ -6,9 +6,12 @@ from datetime import datetime
 import psycopg2
 import psycopg2.extras
 from psycopg2.pool import SimpleConnectionPool
-from dotenv import load_dotenv
 
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ModuleNotFoundError:
+    print("⚠️ python-dotenv орнатылмаған, Render ENV қолданылады.")
 
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 DB_NAME = "parking.db"

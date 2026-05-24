@@ -9,7 +9,13 @@ from datetime import datetime, timedelta
 import cv2
 import numpy as np
 import requests
-from dotenv import load_dotenv
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ModuleNotFoundError:
+    print("⚠️ python-dotenv орнатылмаған, Render ENV қолданылады.")
+
 from flask import (
     Flask,
     Response,
@@ -29,8 +35,6 @@ from database import (
     get_db,
     init_db,
 )
-
-load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 IS_RENDER = os.getenv("RENDER", "").lower() == "true"

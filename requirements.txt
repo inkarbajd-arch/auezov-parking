@@ -3,3 +3,6 @@ gunicorn
 opencv-python-headless
 numpy
 requests
+python-dotenv
+psycopg2-binary
+sqlalchemy
